@@ -131,6 +131,8 @@ func (m *model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.beginCopy()
 	case tea.KeyF6:
 		m.beginMove()
+	case tea.KeyF11:
+		m.beginMoveWithLink()
 	case tea.KeyF7:
 		if msg.Alt {
 			// Alt+F7 (the only modifier+F7 bubbletea can detect; a true
@@ -162,7 +164,7 @@ func (m *model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case ":":
 		m.beginCommand()
 	case "?":
-		m.status = "Tab切换 · ↑↓移动 · Enter进入/打开 · Backspace上级 · Space选择 · Ctrl+A全选 · F2批量重命名 · Alt+F7命令行(复制路径) · F3查看 · F4编辑(可绑定) · F5复制 · F6移动 · F7新建 · F8删除 · Ctrl+E/:assoc 扩展名关联应用 · Ctrl+T新标签 · Ctrl+W关标签 · :命令 · Esc取消"
+		m.status = "Tab切换 · ↑↓移动 · Enter进入/打开 · Backspace上级 · Space选择 · Ctrl+A全选 · F2批量重命名 · Alt+F7命令行(复制路径) · F3查看 · F4编辑(可绑定) · F5复制 · F6移动 · F7新建 · F8删除 · F11移动+链接 · Ctrl+E/:assoc 扩展名关联应用 · Ctrl+T新标签 · Ctrl+W关标签 · :命令 · Esc取消"
 	case "q":
 		m.openConfirm("退出 tcmd? (Y/N)", func() { m.quitting = true })
 	}
@@ -307,6 +309,16 @@ func (m *model) beginMove() {
 	}
 	dst := m.otherPane().current().path
 	m.confirmOp(JobMove, srcs, dst)
+}
+
+func (m *model) beginMoveWithLink() {
+	srcs := m.selectedOrCurrent()
+	if len(srcs) == 0 {
+		m.status = "没有可移动的项"
+		return
+	}
+	dst := m.otherPane().current().path
+	m.confirmOp(JobMoveWithLink, srcs, dst)
 }
 
 // confirmOp opens a confirmation overlay showing the operation type, source

@@ -25,6 +25,7 @@ type JobType int
 const (
 	JobCopy JobType = iota
 	JobMove
+	JobMoveWithLink
 )
 
 func (t JobType) String() string {
@@ -33,6 +34,8 @@ func (t JobType) String() string {
 		return "复制"
 	case JobMove:
 		return "移动"
+	case JobMoveWithLink:
+		return "移动+链接"
 	default:
 		return "?"
 	}
@@ -272,6 +275,13 @@ func (q *JobQueue) runOne(j *Job) {
 		opErr = copyItemsProgress(j.sources, j.dstDir)
 	case JobMove:
 		opErr = moveItemsProgress(j.sources, j.dstDir)
+	case JobMoveWithLink:
+		// MoveWithLink returns the paths of successfully-created links; we
+		// treat the operation as successful when at least one item was moved.
+		links := fs.MoveWithLink(j.sources, j.dstDir)
+		if len(links) == 0 && len(j.sources) > 0 {
+			opErr = fmt.Errorf("所有项的移动或链接均失败")
+		}
 	}
 	// Check cancellation AFTER the op finishes (we can't interrupt an in-flight
 	// io.Copy mid-stream without leaving a half-written file on disk).
