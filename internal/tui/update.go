@@ -12,8 +12,27 @@ import (
 	"github.com/charmbracelet/bubbletea"
 )
 
-// Init is required by tea.Model; tcmd has no startup command.
-func (m *model) Init() tea.Cmd { return nil }
+// Init is required by tea.Model; tcmd uses it to kick off initial directory
+// loading and ensure the event loop runs even when no resize event arrives.
+func (m *model) Init() tea.Cmd {
+	// bubbletea does NOT send an initial WindowSizeMsg on startup — it only
+	// fires when the terminal is actually resized. Without this tick, the
+	// event loop would sit idle until the user resizes the window, and our
+	// checkReloadResult() would never run, leaving every tab stuck on
+	// "加载中..." forever.
+	return tickReloadCmd
+}
+
+// tickReloadCmd fires once after 50ms to prime the reload-checking loop.
+// It's a lightweight bootstrap that ensures async reload results are
+// processed even in terminals that never send WindowSizeMsg at startup.
+func tickReloadCmd() tea.Msg {
+	return reloadTickMsg{}
+}
+
+// reloadTickMsg is an internal marker message that triggers checkReloadResult
+// on all tabs without requiring a real WindowSizeMsg.
+type reloadTickMsg struct{}
 
 // Update is the single entry point for all messages.
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -37,6 +56,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.treeFlat = flattenTree(msg.root)
 		m.treeCursor = 0
 		return m, nil
+	case reloadTickMsg:
+		// Bootstrap tick: prime the reload-checking loop.
+		for _, p := range m.panes {
+			for _, t := range p.tabs {
+				t.checkReloadResult()
+			}
+		}
+		return m, nil
 	}
 	// Check for pending async reload results on all tabs.
 	for _, p := range m.panes {
@@ -45,6 +72,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// UpdateNoReturn is a variant of Update that does not return a new model or Cmd.
+// It is used in tests to simulate the event loop without consuming the return value.
+func (m *model) UpdateNoReturn(msg tea.Msg) {
+	m.Update(msg)
 }
 
 // handleKey routes all incoming events to the right per-overlay handler.
@@ -431,6 +464,10 @@ func (m *model) beginDelete() {
 
 func (m *model) beginView() (tea.Model, tea.Cmd) {
 	t := m.curTab()
+	if t.loading {
+		m.status = "目录加载中，请稍候..."
+		return m, nil
+	}
 	if len(t.entries) == 0 {
 		return m, nil
 	}

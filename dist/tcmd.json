@@ -4,16 +4,25 @@
       "tabs": [
         "C:\\Users\\chenwei\\.codewhale",
         "C:\\Users\\chenwei\\.codewhale",
-        "E:\\docs"
+        "E:\\"
       ],
-      "active": 2
+      "active": 1,
+      "tabCursor": [
+        0,
+        0,
+        0
+      ]
     },
     {
       "tabs": [
         "C:\\Users",
         "E:\\bak"
       ],
-      "active": 1
+      "active": 1,
+      "tabCursor": [
+        0,
+        0
+      ]
     }
   ],
   "active": 0,

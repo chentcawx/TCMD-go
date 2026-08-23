@@ -392,6 +392,10 @@ func (m *model) invertSelection() {
 // openFile in update.go). Either way the session is persisted.
 func (m *model) enterDir() {
 	t := m.curTab()
+	if t.loading {
+		m.status = "目录加载中，请稍候..."
+		return
+	}
 	if len(t.entries) == 0 {
 		return
 	}
