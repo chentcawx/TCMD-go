@@ -1,0 +1,725 @@
+package tui
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strings"
+
+	"github.com/charmbracelet/bubbletea"
+)
+
+// Init is required by tea.Model; tcmd has no startup command.
+func (m *model) Init() tea.Cmd { return nil }
+
+// Update is the single entry point for all messages.
+func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		return m, nil
+	case tea.KeyMsg:
+		return m.handleKey(msg)
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
+	case treeStats:
+		m.treeLoading = false
+		if msg.err != nil {
+			m.ov = overlayNone
+			m.status = "目录读取失败: " + msg.err.Error()
+			return m, nil
+		}
+		m.treeRoot = msg.root
+		m.treeFlat = flattenTree(msg.root)
+		m.treeCursor = 0
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.Type == tea.KeyCtrlC {
+		m.saveConfig()
+		m.quitting = true
+		return m, tea.Quit
+	}
+	switch m.ov {
+	case overlayConfirm:
+		return m.handleConfirmKey(msg)
+	case overlayInput:
+		return m.handleInputKey(msg)
+	case overlayViewer:
+		return m.handleViewerKey(msg)
+	case overlayBatchRename:
+		return m.handleBatchRenameKey(msg)
+	case overlayContextMenu:
+		return m.handleContextMenuKey(msg)
+	case overlayDrivePicker:
+		return m.handleDrivePickerKey(msg)
+	case overlayTree:
+		return m.handleTreeViewKey(msg)
+	case overlayQueue:
+		return m.handleQueueKey(msg)
+	case overlayAssoc:
+		return m.handleAssocKey(msg)
+	default:
+		return m.handleNormalKey(msg)
+	}
+}
+
+// handleNormalKey implements Total-Commander-style keybindings.
+func (m *model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyTab:
+		m.active = 1 - m.active
+		m.saveConfig()
+	case tea.KeyUp, tea.KeyCtrlP:
+		m.moveCursor(-1)
+	case tea.KeyDown, tea.KeyCtrlN:
+		m.moveCursor(1)
+	case tea.KeyPgUp:
+		m.pageMove(-1)
+	case tea.KeyPgDown:
+		m.pageMove(1)
+	case tea.KeyHome:
+		m.curTab().cursor = 0
+	case tea.KeyEnd:
+		t := m.curTab()
+		t.cursor = len(t.entries) - 1
+	case tea.KeyEnter:
+		m.enterDir()
+	case tea.KeyBackspace:
+		m.upDir()
+	case tea.KeySpace, tea.KeyInsert:
+		m.toggleSelect()
+	case tea.KeyRunes:
+		// A literal space is normally KeySpace, but during IME composition or
+		// on some terminals bubbletea delivers it as KeyRunes{' '}. Handle both
+		// so Space selection never silently becomes a no-op.
+		if string(msg.Runes) == " " {
+			m.toggleSelect()
+		}
+	case tea.KeyCtrlA:
+		m.selectAll()
+	case tea.KeyCtrlR:
+		m.reloadCurrent()
+	case tea.KeyCtrlT:
+		m.newTabHere()
+	case tea.KeyCtrlW:
+		m.curPane().closeCurrentTab()
+	case tea.KeyRight:
+		if msg.Alt {
+			m.switchTab(1)
+		} else {
+			m.moveCursor(1)
+		}
+	case tea.KeyLeft:
+		if msg.Alt {
+			m.switchTab(-1)
+		}
+	case tea.KeyF3:
+		return m.beginView()
+	case tea.KeyF4:
+		m.beginEdit()
+	case tea.KeyF2:
+		m.beginBatchRename()
+	case tea.KeyF5:
+		m.beginCopy()
+	case tea.KeyF6:
+		m.beginMove()
+	case tea.KeyF7:
+		if msg.Alt {
+			// Alt+F7 (the only modifier+F7 bubbletea can detect; a true
+			// Ctrl+F7 is indistinguishable from plain F7 in the terminal
+			// protocol) opens a standalone Command Prompt at the cursor's
+			// directory and copies that path to the clipboard.
+			m.beginCmdTerminal()
+		} else {
+			m.beginMkdir()
+		}
+	case tea.KeyF8, tea.KeyDelete:
+		m.beginDelete()
+	case tea.KeyCtrlD:
+		// Ctrl+D opens the drive-letter picker for the active pane.
+		m.beginDrivePicker()
+	case tea.KeyCtrlE:
+		// Ctrl+E opens the extension -> custom application association editor.
+		m.beginAssocEditor()
+	case tea.KeyEscape:
+		if len(m.curTab().selected) > 0 {
+			m.clearSelection()
+		} else {
+			m.openConfirm("退出 tcmd? (Y/N)", func() { m.quitting = true })
+		}
+	}
+
+	// Character keys only (special keys already handled above).
+	switch msg.String() {
+	case ":":
+		m.beginCommand()
+	case "?":
+		m.status = "Tab切换 · ↑↓移动 · Enter进入/打开 · Backspace上级 · Space选择 · Ctrl+A全选 · F2批量重命名 · Alt+F7命令行(复制路径) · F3查看 · F4编辑(可绑定) · F5复制 · F6移动 · F7新建 · F8删除 · Ctrl+E/:assoc 扩展名关联应用 · Ctrl+T新标签 · Ctrl+W关标签 · :命令 · Esc取消"
+	case "q":
+		m.openConfirm("退出 tcmd? (Y/N)", func() { m.quitting = true })
+	}
+	return m, nil
+}
+
+func (m *model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.Type == tea.KeyEscape {
+		m.closeOverlay()
+		return m, nil
+	}
+	switch msg.String() {
+	case "y", "Y":
+		yes := m.confirmYes
+		m.closeOverlay()
+		if yes != nil {
+			yes()
+		}
+		if m.quitting {
+			m.saveConfig()
+			return m, tea.Quit
+		}
+	case "n", "N":
+		m.closeOverlay()
+	}
+	return m, nil
+}
+
+func (m *model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEscape:
+		m.closeOverlay()
+		return m, nil
+	case tea.KeyEnter:
+		val := m.inputValue
+		commit := m.inputCommit
+		m.closeOverlay()
+		if commit != nil {
+			commit(val)
+		}
+		return m, nil
+	case tea.KeyBackspace:
+		rs := []rune(m.inputValue)
+		if m.inputCursor > 0 && m.inputCursor <= len(rs) {
+			rs = append(rs[:m.inputCursor-1], rs[m.inputCursor:]...)
+			m.inputValue = string(rs)
+			m.inputCursor--
+		}
+	case tea.KeyLeft:
+		if m.inputCursor > 0 {
+			m.inputCursor--
+		}
+	case tea.KeyRight:
+		if m.inputCursor < len([]rune(m.inputValue)) {
+			m.inputCursor++
+		}
+	case tea.KeyHome:
+		m.inputCursor = 0
+	case tea.KeyEnd:
+		m.inputCursor = len([]rune(m.inputValue))
+	case tea.KeyRunes:
+		// Composed text, including CJK from an IME, arrives as KeyRunes. Insert
+		// it at the rune cursor; never insert control sequences.
+		ins := []rune(msg.String())
+		if len(ins) == 0 {
+			return m, nil
+		}
+		rs := []rune(m.inputValue)
+		if m.inputCursor < 0 {
+			m.inputCursor = 0
+		}
+		if m.inputCursor > len(rs) {
+			m.inputCursor = len(rs)
+		}
+		rs = append(rs[:m.inputCursor], append(ins, rs[m.inputCursor:]...)...)
+		m.inputValue = string(rs)
+		m.inputCursor += len(ins)
+	default:
+		// Fallback for any other printable single rune not delivered as
+		// KeyRunes (rare). Skip control characters.
+		rs := []rune(msg.String())
+		if len(rs) == 1 && rs[0] >= 32 {
+			r := rs[0]
+			cur := []rune(m.inputValue)
+			if m.inputCursor < 0 {
+				m.inputCursor = 0
+			}
+			if m.inputCursor > len(cur) {
+				m.inputCursor = len(cur)
+			}
+			cur = append(cur[:m.inputCursor], append([]rune{r}, cur[m.inputCursor:]...)...)
+			m.inputValue = string(cur)
+			m.inputCursor++
+		}
+	}
+	return m, nil
+}
+
+func (m *model) handleViewerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.Type == tea.KeyEscape || msg.Type == tea.KeyF3 || msg.String() == "q" {
+		m.closeOverlay()
+		return m, nil
+	}
+	switch msg.Type {
+	case tea.KeyUp, tea.KeyCtrlP:
+		if m.viewerScroll > 0 {
+			m.viewerScroll--
+		}
+	case tea.KeyDown, tea.KeyCtrlN:
+		m.viewerScroll++
+	case tea.KeyPgUp:
+		m.viewerScroll -= (m.height - 4)
+		if m.viewerScroll < 0 {
+			m.viewerScroll = 0
+		}
+	case tea.KeyPgDown:
+		m.viewerScroll += (m.height - 4)
+		if m.viewerScroll < 0 {
+			m.viewerScroll = 0
+		}
+	}
+	return m, nil
+}
+
+// ---- operation triggers (open the right overlay; execution happens on commit) ----
+
+func (m *model) beginCopy() {
+	srcs := m.selectedOrCurrent()
+	if len(srcs) == 0 {
+		m.status = "没有可复制的项"
+		return
+	}
+	dst := m.otherPane().current().path
+	m.confirmOp(JobCopy, srcs, dst)
+}
+
+func (m *model) beginMove() {
+	srcs := m.selectedOrCurrent()
+	if len(srcs) == 0 {
+		m.status = "没有可移动的项"
+		return
+	}
+	dst := m.otherPane().current().path
+	m.confirmOp(JobMove, srcs, dst)
+}
+
+// confirmOp opens a confirmation overlay showing the operation type, source
+// count, and destination. Y proceeds to enqueue; N/Esc cancels.
+func (m *model) confirmOp(typ JobType, sources []string, dstDir string) {
+	n := len(sources)
+	first := ""
+	if n > 0 {
+		first = filepath.Base(sources[0])
+	}
+	msg := fmt.Sprintf("%s %d 项？\n\n源: %s%s\n目: %s",
+		typ, n,
+		first,
+		func() string { if n > 1 { return fmt.Sprintf(" 等 %d 项", n) }; return "" }(),
+		filepath.Base(dstDir),
+	)
+	m.openConfirm(msg, func() { m.enqueueOp(typ, sources, dstDir) })
+}
+
+// enqueueOp starts (or resumes) the job queue, enqueues the operation, and
+// switches the overlay to overlayQueue so the user can watch progress.
+func (m *model) enqueueOp(typ JobType, sources []string, dstDir string) {
+	if m.queue == nil {
+		m.queue = NewJobQueue()
+		go m.queue.Run()
+	}
+	j, err := m.queue.Enqueue(typ, sources, dstDir)
+	if err != nil {
+		m.status = "入队失败: " + err.Error()
+		return
+	}
+	m.ov = overlayQueue
+	m.queueStatus = 1
+	m.clearSelection()
+	m.reloadBoth()
+	m.status = fmt.Sprintf("已入队 %s 任务 #%d：%s", typ, j.id, jobSummary(j))
+}
+
+func (m *model) beginCmdTerminal() {
+	// Open a standalone Command Prompt at the active pane's current directory
+	// and copy that path to the clipboard. Both steps are best-effort: a
+	// failure to open the terminal or write the clipboard is reported in the
+	// status line but never aborts the TUI.
+	dir := m.curTab().path
+	clipErr := writeClipboard(dir)
+	if err := openCmdTerminal(dir); err != nil {
+		m.status = "打开命令行失败: " + err.Error()
+		return
+	}
+	if clipErr != nil {
+		m.status = "已打开命令行于: " + dir + "（剪贴板写入失败）"
+		return
+	}
+	m.status = "已打开命令行于: " + dir + "（路径已复制到剪贴板）"
+}
+
+func (m *model) beginMkdir() {
+	parent := m.curTab().path
+	m.openInput("新建目录:", "", func(val string) {
+		val = strings.TrimSpace(val)
+		if val == "" {
+			return
+		}
+		if err := makeDir(parent, val); err != nil {
+			m.status = "新建失败: " + err.Error()
+		} else {
+			m.status = "已创建: " + val
+			m.reloadCurrent()
+		}
+	})
+}
+
+func (m *model) beginDelete() {
+	srcs := m.selectedOrCurrent()
+	if len(srcs) == 0 {
+		m.status = "没有可删除的项"
+		return
+	}
+	m.openConfirm(fmt.Sprintf("确认删除 %d 项? (Y/N)", len(srcs)), func() {
+		if err := deleteItems(srcs); err != nil {
+			m.status = "删除失败: " + err.Error()
+		} else {
+			m.status = fmt.Sprintf("已删除 %d 项", len(srcs))
+		}
+		m.clearSelection()
+		m.reloadBoth()
+	})
+}
+
+func (m *model) beginView() (tea.Model, tea.Cmd) {
+	t := m.curTab()
+	if len(t.entries) == 0 {
+		return m, nil
+	}
+	e := t.entries[t.cursor]
+	if e.IsDir {
+		return m, m.openTreeView(e.Path)
+	}
+	// F3: if the extension has a custom "view" association, launch that app
+	// instead of the built-in text viewer.
+	if cmd, ok := m.ResolveAssoc(AssocView, extOf(e.Name)); ok {
+		m.launchAssoc(AssocView, cmd, e.Path)
+		return m, nil
+	}
+	m.openViewer(e.Path)
+	return m, nil
+}
+
+// launchAssoc runs a custom-associated application on file and reports the
+// outcome in the status line. It is the shared sink for F3/F4/Enter so the
+// status wording stays consistent.
+func (m *model) launchAssoc(action AssocAction, appCmd, file string) {
+	if err := runWithFile(appCmd, file); err != nil {
+		m.status = fmt.Sprintf("关联应用启动失败(%s): %s", assocActionLabel(action), err.Error())
+		return
+	}
+	m.status = fmt.Sprintf("已用关联应用打开(%s): %s", assocActionLabel(action), baseName(file))
+}
+
+// beginEdit handles F4. For files with a custom "edit" association the bound
+// app is launched; otherwise a stub notice is shown (built-in editor is a
+// future feature) so the key never silently does nothing.
+func (m *model) beginEdit() {
+	t := m.curTab()
+	if len(t.entries) == 0 {
+		return
+	}
+	e := t.entries[t.cursor]
+	if e.IsDir {
+		m.status = "F4 编辑仅适用于文件"
+		return
+	}
+	if cmd, ok := m.ResolveAssoc(AssocEdit, extOf(e.Name)); ok {
+		m.launchAssoc(AssocEdit, cmd, e.Path)
+		return
+	}
+	m.status = "F4 编辑将在后续版本提供（当前可用 F3 查看；可在 Ctrl+E 为扩展名绑定编辑器）"
+}
+
+// openTreeView starts an async stat of dir and opens the tree overlay.
+// Returns a one-shot tea.Cmd that fires treeStats once the stat completes.
+// openTreeView starts an async stat of dir and opens the tree overlay fresh:
+// all prior tree state (including the history stack) is cleared. Used by F3.
+func (m *model) openTreeView(dir string) tea.Cmd {
+	m.treePath = dir
+	m.treeRoot = nil
+	m.treeFlat = nil
+	m.treeCursor = 0
+	m.treeHistory = nil
+	m.treeLoading = true
+	m.ov = overlayTree
+	ch := make(chan treeStats, 1)
+	go AsyncTreeStat(dir, ch)
+	return func() tea.Msg {
+		return <-ch
+	}
+}
+
+// restatTree re-runs the async stat for dir WITHOUT clearing the history
+// stack or cursor bookkeeping that the caller has already set up. Used when
+// navigating into a subdirectory (Enter) or back to a parent (Backspace),
+// where the caller pushes/pops treeHistory before calling this.
+func (m *model) restatTree(dir string) tea.Cmd {
+	m.treePath = dir
+	m.treeRoot = nil
+	m.treeFlat = nil
+	m.treeCursor = 0
+	m.treeLoading = true
+	m.ov = overlayTree
+	ch := make(chan treeStats, 1)
+	go AsyncTreeStat(dir, ch)
+	return func() tea.Msg {
+		return <-ch
+	}
+}
+
+func (m *model) beginCommand() {
+	m.openInput("cmd> ", "", func(val string) {
+		val = strings.TrimSpace(val)
+		if val == "" {
+			return
+		}
+		// The ":assoc" command opens the extension -> application editor, a
+		// reliable alternative to Ctrl+E for terminals that don't deliver the
+		// control combination reliably.
+		if strings.EqualFold(val, "assoc") {
+			m.beginAssocEditor()
+			return
+		}
+		// A bare directory path jumps the active pane; otherwise run as a shell
+		// command and surface its combined output in the status line.
+		if fi, err := os.Stat(val); err == nil && fi.IsDir() {
+			m.curPane().tabs[m.curPane().active] = newTab(val)
+			return
+		}
+		out, err := runShell(val)
+		if err != nil {
+			m.status = fmt.Sprintf("命令错误: %v", err)
+		} else {
+			m.status = strings.TrimSpace(string(out))
+		}
+	})
+}
+
+// openFile launches the given path with the operating system's default
+// association (the same action Explorer performs on a double-click / the
+// "打开" context-menu verb). On Windows this calls ShellExecuteW with the
+// "open" verb — the genuine system handler, not a `cmd /c start`
+// approximation — so per-extension and UAC behavior match Explorer exactly.
+// The external process is detached so the TUI is never blocked; the spawned
+// helper is reaped in a background goroutine to avoid a zombie.
+func openFile(path string) error {
+	return shellOpen(path)
+}
+
+// runShell executes a command via the platform shell (cmd on Windows, sh
+// elsewhere) and returns combined output.
+func runShell(command string) ([]byte, error) {
+	if runtime.GOOS == "windows" {
+		return exec.Command("cmd", "/c", command).CombinedOutput()
+	}
+	return exec.Command("sh", "-c", command).CombinedOutput()
+}
+
+// handleQueueKey routes keys while overlayQueue is visible.
+// Esc toggles the overlay back to the normal view. Space pauses/resumes all
+// in-flight jobs; Ctrl+C cancels the active job; Ctrl+A cancels all.
+func (m *model) handleTreeViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.Type == tea.KeyEscape {
+		m.ov = overlayNone
+		m.treePath = ""
+		m.treeRoot = nil
+		m.treeHistory = nil
+		m.treeLoading = false
+		m.status = ""
+		return m, nil
+	}
+	if m.treeLoading {
+		return m, nil
+	}
+	if m.treeRoot == nil {
+		return m, nil
+	}
+	switch msg.Type {
+	case tea.KeyUp, tea.KeyCtrlP:
+		if m.treeCursor > 0 {
+			m.treeCursor--
+		}
+	case tea.KeyDown, tea.KeyCtrlN:
+		// treeCursor indexes into treeFlat (pre-order visible nodes). Clamp to
+		// the last entry so a long press at the bottom is a no-op, not OOB.
+		if m.treeCursor < len(m.treeFlat)-1 {
+			m.treeCursor++
+		}
+	case tea.KeyEnter:
+		// Enter descends into the directory under the cursor. The current path
+		// is pushed onto the history stack so ←/Backspace can return to it.
+		if m.treeCursor < 0 || m.treeCursor >= len(m.treeFlat) {
+			return m, nil
+		}
+		node := m.treeFlat[m.treeCursor]
+		m.treeHistory = append(m.treeHistory, m.treePath)
+		return m, m.restatTree(node.path)
+	case tea.KeyBackspace, tea.KeyLeft:
+		if len(m.treeHistory) > 0 {
+			parent := m.treeHistory[len(m.treeHistory)-1]
+			m.treeHistory = m.treeHistory[:len(m.treeHistory)-1]
+			m.treeCursor = 0
+			return m, m.restatTree(parent)
+		}
+	}
+	return m, nil
+}
+
+// handleQueueKey routes keys while overlayQueue is visible.
+// Esc toggles the overlay back to the normal view. Space pauses/resumes all
+// in-flight jobs; Ctrl+C cancels the active job; Ctrl+A cancels all.
+func (m *model) handleQueueKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.ov = overlayNone
+		// Keep the queue running in background; just hide the overlay.
+		return m, nil
+	case " ":
+		m.paused = !m.paused
+		if m.paused {
+			m.status = "队列已暂停（新任务仍可入队，进行中任务等待恢复）"
+		} else {
+			m.status = "队列已恢复"
+		}
+		return m, nil
+	}
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		// Cancel the first active job.
+		acts := m.queue.ActiveJobs()
+		if len(acts) > 0 {
+			m.queue.Cancel(acts[0].id)
+			m.status = "已取消任务 #" + utoa(acts[0].id)
+		}
+		return m, nil
+	case tea.KeyCtrlA:
+		m.queue.CancelAll()
+		m.status = "已取消全部任务"
+		return m, nil
+	}
+	return m, nil
+}
+
+// handleAssocKey routes keys for the association editor (Ctrl+E).
+//   - Tab / Shift+Tab : switch between view / edit / open action tabs
+//   - ↑/↓             : move the cursor within the current action's list
+//   - a               : add a new binding (prompts for extension, then command)
+//   - d / Delete      : delete the binding under the cursor
+//   - Enter           : (no-op on list; add is driven by 'a')
+//   - Esc             : close the editor
+//
+// Adding flows through the shared input overlay: first the extension, then on
+// commit the command, so we never block the event loop with a custom prompt.
+func (m *model) handleAssocKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.Type == tea.KeyEscape {
+		m.closeOverlay()
+		return m, nil
+	}
+	// While entering the extension or command we defer to the input overlay,
+	// which is active on top of this editor. Guard against re-entrancy.
+	if m.ov == overlayInput || m.ov == overlayConfirm {
+		return m, nil
+	}
+	switch msg.Type {
+	case tea.KeyTab:
+		// Tab cycles forward; Shift+Tab (Alt+Tab is not reliably reported) also
+		// cycles forward here — acceptable for a 3-tab editor.
+		m.assocActionIdx = (m.assocActionIdx + 1) % len(assocActions())
+		m.assocCursor = 0
+		m.assocMsg = ""
+		return m, nil
+	}
+	switch msg.String() {
+	case "up", "k":
+		if m.assocCursor > 0 {
+			m.assocCursor--
+		}
+		return m, nil
+	case "down", "j":
+		n := len(m.currentAssocList())
+		if m.assocCursor < n-1 {
+			m.assocCursor++
+		}
+		return m, nil
+	case "a":
+		// Begin add: ask for the extension first, then the command. The action
+		// tab is captured now so the two-step input survives closeOverlay's
+		// state reset between prompts.
+		action := assocActions()[m.assocActionIdx]
+		m.openInput("扩展名 (如 txt 或 .txt):", "", func(ext string) {
+			ext = strings.TrimSpace(ext)
+			if ext == "" {
+				return
+			}
+			m.openInput("关联程序 (如 notepad 或 C:\\app\\a.exe):", "", func(cmd string) {
+				m.SetAssoc(action, ext, cmd)
+				// Restore the editor overlay (closeOverlay reset ov to None).
+				m.ov = overlayAssoc
+				m.assocMsg = fmt.Sprintf("已绑定 %s -> %s", assocKey(ext), cmd)
+				m.assocCursor = 0
+			})
+		})
+		return m, nil
+	case "d", "delete":
+		list := m.currentAssocList()
+		if m.assocCursor < 0 || m.assocCursor >= len(list) {
+			return m, nil
+		}
+		ext := list[m.assocCursor]
+		action := assocActions()[m.assocActionIdx]
+		m.DelAssoc(action, ext)
+		m.assocMsg = fmt.Sprintf("已删除 %s 的绑定", ext)
+		if m.assocCursor >= len(m.currentAssocList()) {
+			m.assocCursor = len(m.currentAssocList()) - 1
+		}
+		if m.assocCursor < 0 {
+			m.assocCursor = 0
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+// currentAssocList returns the sorted extension keys bound to the active action
+// tab, for stable cursor navigation in the editor.
+func (m *model) currentAssocList() []string {
+	action := string(assocActions()[m.assocActionIdx])
+	m2 := m.assoc[action]
+	out := make([]string, 0, len(m2))
+	for k := range m2 {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// utoa converts an int64 to string — avoids importing strconv just for one call.
+func utoa(n int64) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [24]byte
+	pos := len(buf)
+	for n > 0 {
+		pos--
+		buf[pos] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[pos:])
+}
