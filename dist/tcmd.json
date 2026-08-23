@@ -1,0 +1,25 @@
+{
+  "panes": [
+    {
+      "tabs": [
+        "C:\\Users\\chenwei\\.codewhale"
+      ],
+      "active": 0
+    },
+    {
+      "tabs": [
+        "C:\\Users\\chenwei"
+      ],
+      "active": 0
+    }
+  ],
+  "active": 0,
+  "width": 120,
+  "height": 30,
+  "assoc": {
+    "edit": {
+      ".toml": "d:\\tools\\EmEditor\\EmEditor.exe",
+      ".txt": "d:\\tools\\EmEditor\\EmEditor.exe"
+    }
+  }
+}

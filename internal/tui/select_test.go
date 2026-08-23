@@ -1,0 +1,41 @@
+package tui
+
+import (
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+// TestSpaceSelectsViaKeySpace covers the normal case where a space arrives as
+// the dedicated KeySpace event.
+func TestSpaceSelectsViaKeySpace(t *testing.T) {
+	m := InitialModel()
+	mm, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	nm := mm.(*model)
+	if len(nm.curTab().selected) != 1 {
+		t.Fatalf("KeySpace did not select exactly one entry: %v", nm.curTab().selected)
+	}
+}
+
+// TestSpaceSelectsViaKeyRunes locks in the fix: some terminals / IME
+// composition deliver a space as KeyRunes{' '} rather than KeySpace. Without
+// this branch the selection silently did nothing.
+func TestSpaceSelectsViaKeyRunes(t *testing.T) {
+	m := InitialModel()
+	mm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	nm := mm.(*model)
+	if len(nm.curTab().selected) != 1 {
+		t.Fatalf("Space-as-KeyRunes did not select: %v", nm.curTab().selected)
+	}
+}
+
+// TestSpaceTogglesOff ensures a second Space on the same row clears the mark.
+func TestSpaceTogglesOff(t *testing.T) {
+	m := InitialModel()
+	m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	mm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	nm := mm.(*model)
+	if len(nm.curTab().selected) != 0 {
+		t.Fatalf("second Space should clear selection, got %v", nm.curTab().selected)
+	}
+}
