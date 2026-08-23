@@ -38,15 +38,29 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.treeCursor = 0
 		return m, nil
 	}
+	// Check for pending async reload results on all tabs.
+	for _, p := range m.panes {
+		for _, t := range p.tabs {
+			t.checkReloadResult()
+		}
+	}
 	return m, nil
 }
 
+// handleKey routes all incoming events to the right per-overlay handler.
+// Each overlay has its own handler; adding a new overlay requires:
+//   1. Adding a case to this switch (or the overlayKind-to-handler map below).
+//   2. Implementing the corresponding handle*Key method.
+//   3. Adding a case in View() to render the overlay.
 func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.Type == tea.KeyCtrlC {
 		m.saveConfig()
 		m.quitting = true
 		return m, tea.Quit
 	}
+	// Overlay-key dispatch table: each overlayKind maps to its handler.
+	// Staying as an explicit switch avoids an extra indirection and keeps
+	// the call stack easy to follow during debugging.
 	switch m.ov {
 	case overlayConfirm:
 		return m.handleConfirmKey(msg)
@@ -282,8 +296,15 @@ func (m *model) handleViewerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyPgDown:
 		m.viewerScroll += (m.height - 4)
-		if m.viewerScroll < 0 {
-			m.viewerScroll = 0
+		// Clamp to the last visible window so the viewer never scrolls past
+		// the end of the file. The original code mistakenly checked < 0 here
+		// (a copy-paste from KeyPgUp), which was dead code for PgDown.
+		maxScroll := len(m.viewerLines) - (m.height - 4)
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		if m.viewerScroll > maxScroll {
+			m.viewerScroll = maxScroll
 		}
 	}
 	return m, nil
@@ -514,6 +535,11 @@ func (m *model) beginCommand() {
 			m.curPane().tabs[m.curPane().active] = newTab(val)
 			return
 		}
+		// Validate before executing to prevent command injection.
+		if err := sanitizeShellInput(val); err != nil {
+			m.status = err.Error()
+			return
+		}
 		out, err := runShell(val)
 		if err != nil {
 			m.status = fmt.Sprintf("命令错误: %v", err)
@@ -534,8 +560,87 @@ func openFile(path string) error {
 	return shellOpen(path)
 }
 
+// dangerousPatterns lists substrings that must never appear in a :cmd input,
+// regardless of quoting. This is a defense-in-depth layer on top of the
+// explicit allowlist below; it catches sloppy attempts to pipe/redirect or
+// chain commands even when the user thinks they're being clever.
+var dangerousPatterns = []string{
+	";",   // command separator (cmd) / pipeline (sh)
+	"&",   // background / AND chain
+	"|",   // pipe
+	">",   // output redirect
+	"<",   // input redirect
+	"&&",  // chained AND
+	"||",  // chained OR
+	"``",  // nested command substitution
+	"$(",  // command substitution (sh)
+	"`",   // command substitution (legacy sh)
+	"&&&", // extended chainer
+}
+
+// allowedShellCommands is the explicit allowlist for :cmd. Only commands whose
+// first token (after trimming) appears here are permitted. Everything else is
+// rejected with a clear status message. This is the primary gate; the
+// dangerousPatterns check is a secondary defense-in-depth layer.
+var allowedShellCommands = map[string]bool{
+	"dir":    true,
+	"ls":     true,
+	"cd":     true,
+	"pwd":    true,
+	"echo":   true,
+	"date":   true,
+	"time":   true,
+	"tree":   true,
+	"find":   true,
+	"where":  true,
+	"which":  true,
+	"ping":   true,
+	"ipconfig": true,
+	"ifconfig": true,
+	"netstat": true,
+	"tasklist": true,
+	"ps":     true,
+	"vol":    true,
+	" ver":   true, // space-prefix avoids matching "version" etc.
+}
+
+// sanitizeShellInput performs two layers of validation on a user-supplied :cmd
+// string: (1) an explicit allowlist of permitted command names, and (2) a
+// blacklist of dangerous substrings. It returns an error when the input is
+// rejected so the caller can surface a clear message in the status line.
+func sanitizeShellInput(cmd string) error {
+	// Layer 1: reject known-dangerous characters regardless of quoting.
+	for _, pat := range dangerousPatterns {
+		if strings.Contains(cmd, pat) {
+			return fmt.Errorf("命令被拒绝: 包含危险字符 %q", pat)
+		}
+	}
+	// Layer 2: allowlist check on the first token.
+	first := strings.Fields(cmd)
+	if len(first) == 0 {
+		return nil // empty after trim — caller already guards against this.
+	}
+	base := strings.ToLower(filepath.Base(first[0]))
+	if !allowedShellCommands[base] {
+		return fmt.Errorf("命令不被允许: %q（仅允许 %v）", first[0], shellAllowedNames())
+	}
+	return nil
+}
+
+// shellAllowedNames returns a human-readable list of permitted command names
+// for error messages.
+func shellAllowedNames() []string {
+	names := make([]string, 0, len(allowedShellCommands))
+	for n := range allowedShellCommands {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // runShell executes a command via the platform shell (cmd on Windows, sh
-// elsewhere) and returns combined output.
+// elsewhere) and returns combined output. Caller MUST have already validated
+// the command via sanitizeShellInput.
 func runShell(command string) ([]byte, error) {
 	if runtime.GOOS == "windows" {
 		return exec.Command("cmd", "/c", command).CombinedOutput()

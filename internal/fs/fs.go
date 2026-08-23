@@ -13,12 +13,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
-
-// copyBufSize is the chunk used while streaming file copies, so a multi-GB
-// file never spikes heap by being read whole.
-const copyBufSize = 32 * 1024
 
 // ProgressFunc is called during a copy/move operation to report real-time
 // progress. doneBytes/totalBytes are 0 when total is unknown (e.g. recursive
@@ -62,10 +59,18 @@ func ListDir(dir string) ([]Entry, error) {
 	entries := make([]Entry, 0, len(infos))
 	for _, fi := range infos {
 		full := filepath.Join(dir, fi.Name())
+		isDir := fi.IsDir()
+		// On Windows, directory junctions (created via mklink /J) report IsDir
+		// false via os.Stat because they are reparse points, not real directories.
+		// Detect junctions explicitly so the UI sorts them with directories and
+		// allows Enter to descend through them transparently.
+		if !isDir {
+			isDir = isJunction(full)
+		}
 		entries = append(entries, Entry{
 			Name:     fi.Name(),
 			Path:     full,
-			IsDir:    fi.IsDir(),
+			IsDir:    isDir,
 			Size:     fi.Size(),
 			ModTime:  fi.ModTime(),
 			Mode:     fi.Mode(),
@@ -152,14 +157,36 @@ func copyDirProgress(src, dst string, cb ProgressFunc) error {
 	if err != nil {
 		return fmt.Errorf("读取源目录失败 %q: %w", src, err)
 	}
+	// Fan out up to maxCopyWorkers concurrent copy operations per directory
+	// level so that a deep tree with many small files doesn't stall on a
+	// single worker goroutine. Each goroutine reports progress through cb.
+	const maxCopyWorkers = 4
+	sem := make(chan struct{}, maxCopyWorkers)
+	var wg sync.WaitGroup
+	var firstErr error
+	var errMu sync.Mutex
 	for _, e := range entries {
 		s := filepath.Join(src, e.Name())
 		d := filepath.Join(dst, e.Name())
-		if err := CopyProgress(s, d, cb); err != nil {
-			return err
-		}
+		wg.Add(1)
+		go func(src, dst string) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			default:
+			}
+			defer func() { <-sem }()
+			if err := CopyProgress(s, dst, cb); err != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				errMu.Unlock()
+			}
+		}(s, d)
 	}
-	return nil
+	wg.Wait()
+	return firstErr
 }
 
 // Copy copies src to dst, recursing into directories. Existing files at dst are

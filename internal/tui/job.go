@@ -118,9 +118,6 @@ type JobQueue struct {
 	stopped chan struct{}
 }
 
-const defaultMaxWorkers = 2
-const maxConcurrentJobs = 10
-
 // NewJobQueue returns a queue with maxWorkers goroutines draining inbound
 // jobs. Call Run in a goroutine; stop it with Stop().
 func NewJobQueue() *JobQueue {
@@ -278,9 +275,14 @@ func (q *JobQueue) runOne(j *Job) {
 	case JobMoveWithLink:
 		// MoveWithLink returns the paths of successfully-created links; we
 		// treat the operation as successful when at least one item was moved.
+		// Cross-volume moves are skipped for junction creation (see fs_windows.go).
 		links := fs.MoveWithLink(j.sources, j.dstDir)
 		if len(links) == 0 && len(j.sources) > 0 {
 			opErr = fmt.Errorf("所有项的移动或链接均失败")
+		} else if len(links) < len(j.sources) {
+			// Some items were moved but no junction was created — likely
+			// cross-volume move. Report partial success.
+			opErr = fmt.Errorf("已移动 %d/%d 项（跨卷移动不创建链接）", len(links), len(j.sources))
 		}
 	}
 	// Check cancellation AFTER the op finishes (we can't interrupt an in-flight
@@ -303,6 +305,8 @@ func (q *JobQueue) markDone(j *Job, err error) {
 	j.endTime = time.Now()
 	atomic.StoreInt32(&j.doneFlag, 1)
 	j.mu.Unlock()
+	// Signal the queue's Run loop to prune this job. Use a non-blocking send
+	// so a busy worker never blocks on a full channel.
 	select {
 	case q.prune <- struct{}{}:
 	default:

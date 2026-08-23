@@ -136,8 +136,8 @@ func AsyncTreeStat(dir string, ch chan<- treeStats) {
 	select {
 	case root := <-done:
 		ch <- treeStats{root: root}
-	case <-time.After(10 * time.Second):
-		ch <- treeStats{err: fmt.Errorf("目录统计超时（10s），请尝试在较小的目录下查看")}
+	case <-time.After(treeStatTimeout):
+		ch <- treeStats{err: fmt.Errorf("目录统计超时（%v），请尝试在较小的目录下查看", treeStatTimeout)}
 	}
 	wg.Wait()
 	close(ch)

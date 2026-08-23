@@ -13,29 +13,114 @@ import (
 // tab is one open directory within a pane. A pane holds several tabs, which is
 // the multi-tab feature mirroring Total Commander's per-side tabs.
 type tab struct {
-	path     string
-	entries  []fs.Entry
-	cursor   int             // index of the highlighted row in entries
-	selected map[string]bool // set of selected entry paths
-	offset   int             // first visible row (scroll position)
-	loadErr  error           // non-nil when the last reload failed
+	path        string
+	entries     []fs.Entry
+	cursor      int                   // index of the highlighted row in entries
+	selected    map[string]bool       // set of selected entry paths
+	offset      int                   // first visible row (scroll position)
+	loadErr     error                 // non-nil when the last reload failed
+	loading     bool                  // true while async reload is in progress
+	loadingMsg  string                // status message shown during loading
+	_reloadCh   chan tabReloadMsg     // internal channel for async reload result
 }
 
 func newTab(path string) *tab {
 	t := &tab{path: path, selected: make(map[string]bool)}
-	t.reload()
+	// Start async reload; t.entries stays nil until completion.
+	t.asyncReload()
 	return t
+}
+
+// asyncReload starts a goroutine to load the directory listing asynchronously.
+// The result is delivered via a global channel that the Update loop polls.
+func (t *tab) asyncReload() {
+	if t.loading {
+		return // already loading
+	}
+	t.loading = true
+	t.loadingMsg = "加载中..."
+	t.loadErr = nil
+	t._reloadCh = make(chan tabReloadMsg, 1)
+	go func() {
+		defer close(t._reloadCh)
+		entries, err := fs.ListDir(t.path)
+		t._reloadCh <- tabReloadMsg{tab: t, entries: entries, err: err}
+	}()
+}
+
+// checkReloadResult checks if there's a pending reload result for this tab.
+// Returns true if a result was found and applied.
+func (t *tab) checkReloadResult() bool {
+	if !t.loading || t._reloadCh == nil {
+		return false
+	}
+	select {
+	case msg, ok := <-t._reloadCh:
+		if !ok {
+			t.loading = false
+			return false
+		}
+		t.applyReloadResult(msg.entries, msg.err)
+		return true
+	default:
+		return false
+	}
+}
+
+// waitForLoading blocks until the tab finishes loading (or times out).
+// Only for use in tests.
+func (t *tab) waitForLoading(timeout time.Duration) bool {
+	deadline := time.After(timeout)
+	for t.loading {
+		select {
+		case <-deadline:
+			return false
+		default:
+			// Poll for result.
+			t.checkReloadResult()
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	return true
+}
+func (t *tab) applyReloadResult(entries []fs.Entry, err error) {
+	t.loading = false
+	t.loadingMsg = ""
+	if err != nil {
+		t.loadErr = err
+		return
+	}
+	t.loadErr = nil
+	t.entries = entries
+	if t.cursor >= len(entries) {
+		t.cursor = len(entries) - 1
+	}
+	if t.cursor < 0 {
+		t.cursor = 0
+	}
+}
+
+// tabReloadMsg is the bubbletea message delivered after async reload completes.
+type tabReloadMsg struct {
+	tab     *tab
+	entries []fs.Entry
+	err     error
 }
 
 // newTabAt creates a tab for path and, if focusName is non-empty and matches
 // an entry in the listing, positions the cursor on that entry. Used when going
 // up a directory so the cursor lands on the directory we just left rather than
 // jumping back to the first row.
+//
+// Because newTab starts an async reload, newTabAt must wait for the load to
+// complete before it can resolve the focus name.
 func newTabAt(path, focusName string) *tab {
 	t := newTab(path)
 	if focusName == "" {
 		return t
 	}
+	// Wait for async load to finish so we can find the focus name.
+	t.waitForLoading(5 * time.Second)
 	for i, e := range t.entries {
 		if e.Name == focusName {
 			t.cursor = i
@@ -45,9 +130,10 @@ func newTabAt(path, focusName string) *tab {
 	return t
 }
 
-// reload re-reads the directory from disk, preserving the selection set and
-// clamping the cursor. A failed read keeps the previous entries but records
-// loadErr so the UI surfaces it instead of silently showing stale data.
+// reload re-reads the directory from disk synchronously. Kept for backward
+// compatibility and for cases where async loading isn't appropriate (e.g.,
+// closeCurrentTab on last tab). For new tabs and user-triggered refreshes,
+// prefer asyncReload() to keep the TUI responsive.
 func (t *tab) reload() {
 	entries, err := fs.ListDir(t.path)
 	if err != nil {
@@ -357,7 +443,7 @@ func (m *model) switchTab(d int) {
 }
 
 func (m *model) reloadCurrent() {
-	m.curTab().reload()
+	m.curTab().asyncReload()
 }
 
 // selectedOrCurrent returns the selected paths, or the current row if nothing
@@ -381,7 +467,7 @@ func (m *model) selectedOrCurrent() []string {
 
 func (m *model) reloadBoth() {
 	for _, p := range m.panes {
-		p.current().reload()
+		p.current().asyncReload()
 	}
 }
 
@@ -416,13 +502,12 @@ func (m *model) beginAssocEditor() {
 // back to a status message for binaries / oversized files (to avoid memory
 // blow-up or mojibake).
 func (m *model) openViewer(path string) {
-	const maxView = 5 * 1024 * 1024
 	fi, err := os.Stat(path)
 	if err != nil {
 		m.status = "无法查看: " + err.Error()
 		return
 	}
-	if fi.Size() > maxView {
+	if fi.Size() > maxViewBytes {
 		m.status = "文件过大，无法内置查看"
 		return
 	}
@@ -491,6 +576,11 @@ func (m *model) closeOverlay() {
 	m.assocPhase = 0
 	m.assocExtDraft = ""
 	m.assocMsg = ""
+	// Text viewer transient state — reset so a subsequent viewer open starts
+	// clean without stale scroll/line data lingering in the model.
+	m.viewerPath = ""
+	m.viewerLines = nil
+	m.viewerScroll = 0
 	// Leave queueStatus alone: the queue overlay is toggled via its own key
 	// handler, not via closeOverlay.
 }

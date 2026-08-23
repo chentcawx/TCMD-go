@@ -2,15 +2,18 @@
   "panes": [
     {
       "tabs": [
-        "C:\\Users\\chenwei\\.codewhale"
+        "C:\\Users\\chenwei\\.codewhale",
+        "C:\\Users\\chenwei\\.codewhale",
+        "E:\\docs"
       ],
-      "active": 0
+      "active": 2
     },
     {
       "tabs": [
-        "C:\\Users\\chenwei"
+        "C:\\Users",
+        "E:\\bak"
       ],
-      "active": 0
+      "active": 1
     }
   ],
   "active": 0,

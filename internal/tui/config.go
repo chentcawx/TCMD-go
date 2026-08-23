@@ -40,10 +40,14 @@ func isValidConfigString(s string) bool {
 }
 
 // paneState is the persisted shape of one side panel: the stack of open tab
-// paths plus which tab is active.
+// paths plus which tab is active. Each tab also carries cursor/offset so the
+// UI can restore the user's position after a restart.
 type paneState struct {
 	Tabs   []string `json:"tabs"`
 	Active int      `json:"active"`
+	// TabCursor stores the cursor position for each tab, indexed by tab position.
+	// Zero values are ignored on load (cursor defaults to 0).
+	TabCursor []int `json:"tabCursor,omitempty"`
 }
 
 // AssocAction identifies which key gesture an association applies to.
@@ -155,11 +159,22 @@ func (m *model) ApplyConfig(c *Config) {
 			continue
 		}
 		tabs := make([]*tab, 0, len(ps.Tabs))
-		for _, pth := range ps.Tabs {
+		for j, pth := range ps.Tabs {
 			if !dirExists(pth) {
 				pth = homeDir()
 			}
-			tabs = append(tabs, newTab(pth))
+			t := newTab(pth)
+			// Restore cursor if we have a saved value for this tab index.
+			if j < len(ps.TabCursor) && ps.TabCursor[j] >= 0 {
+				t.cursor = ps.TabCursor[j]
+				if t.cursor >= len(t.entries) {
+					t.cursor = len(t.entries) - 1
+				}
+				if t.cursor < 0 {
+					t.cursor = 0
+				}
+			}
+			tabs = append(tabs, t)
 		}
 		active := ps.Active
 		if active < 0 || active >= len(tabs) {
@@ -189,6 +204,10 @@ func (m *model) saveConfig() {
 		ps := paneState{Active: p.active}
 		for _, t := range p.tabs {
 			ps.Tabs = append(ps.Tabs, t.path)
+		}
+		// Capture cursor positions so they survive a restart.
+		for _, t := range p.tabs {
+			ps.TabCursor = append(ps.TabCursor, t.cursor)
 		}
 		c.Panes[i] = ps
 	}

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -52,12 +53,15 @@ func runWithFile(appCmd, file string) error {
 // startDetached begins the process and reaps it in the background, returning
 // immediately with any start error. The child is intentionally left running
 // after tcmd continues — matching Explorer's "open with" behavior.
+// Wait errors (e.g. exit code != 0) are logged to stderr for diagnostics.
 func startDetached(cmd *exec.Cmd) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 	go func() {
-		_ = cmd.Wait()
+		if err := cmd.Wait(); err != nil {
+			fmt.Fprintf(os.Stderr, "[tui] 关联进程退出错误: %v\n", err)
+		}
 	}()
 	return nil
 }

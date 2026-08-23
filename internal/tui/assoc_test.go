@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -211,6 +212,8 @@ func TestAssocWiredIntoBeginView(t *testing.T) {
 	m.active = 0
 	m.curTab().path = dir
 	m.reloadCurrent()
+	// Wait for async reload to complete.
+	m.curTab().waitForLoading(2 * time.Second)
 	// Cursor on note.txt.
 	for i, e := range m.curTab().entries {
 		if e.Name == "note.txt" {

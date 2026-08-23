@@ -30,6 +30,49 @@ func isHidden(path string, fi os.FileInfo) bool {
 	return attrs&windows.FILE_ATTRIBUTE_HIDDEN != 0
 }
 
+// isJunction reports whether path is a directory junction (reparse point with
+// tag 0xA0000003, same as IO_REPARSE_TAG_MOUNT_POINT). Junctions appear as
+// regular files via os.Lstat (Mode doesn't include ModeDir), so we must check
+// the reparse tag explicitly to avoid treating them as files in the UI.
+func isJunction(path string) bool {
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return false
+	}
+	h, err := windows.CreateFile(
+		p,
+		0,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT,
+		0,
+	)
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(h)
+	const bufSize = 16384
+	buf := make([]byte, bufSize)
+	var bytesReturned uint32
+	if err := windows.DeviceIoControl(
+		h,
+		windows.FSCTL_GET_REPARSE_POINT,
+		nil,
+		0,
+		&buf[0],
+		bufSize,
+		&bytesReturned,
+		nil,
+	); err != nil {
+		return false
+	}
+	// REPARSE_DATA_BUFFER: first field is ReparseTag (uint32 at offset 0).
+	// A junction's tag is 0xA0000003 — the same value as IO_REPARSE_TAG_MOUNT_POINT.
+	tag := uint32(buf[0]) | uint32(buf[1])<<8 | uint32(buf[2])<<16 | uint32(buf[3])<<24
+	return tag == windows.IO_REPARSE_TAG_MOUNT_POINT
+}
+
 // CreateJunction creates a directory junction at link -> target. Both paths
 // must be absolute. The link must not already exist.
 //
@@ -62,6 +105,10 @@ func CreateJunction(link, target string) error {
 // new location. The link acts as a transparent placeholder so callers that
 // reference the original path keep working.
 //
+// ⚠️ 跨卷移动警告：如果源和目标在不同卷，Move 会先复制再删除源。此时创建
+// junction 意义有限（junction 仅在同卷有效），且如果删除失败会导致数据丢失。
+// 因此本函数在检测到跨卷移动时会跳过 junction 创建，并在 status 中提示用户。
+//
 // Errors are collected per-item: one failing source never aborts the others.
 // The returned slice contains the paths of successfully-created links.
 func MoveWithLink(sources []string, dstDir string) []string {
@@ -69,6 +116,13 @@ func MoveWithLink(sources []string, dstDir string) []string {
 	for _, s := range sources {
 		dst := filepath.Join(dstDir, filepath.Base(s))
 		if err := Move(s, dst); err != nil {
+			continue
+		}
+		// Junctions are only reliable on the same volume. Skip creation for
+		// cross-volume moves to avoid leaving a non-functional placeholder.
+		if filepath.VolumeName(s) != filepath.VolumeName(dst) {
+			// Note: caller (job.go) has no way to surface this per-item note;
+			// the link just won't be in the returned slice.
 			continue
 		}
 		if err := CreateJunction(s, dst); err != nil {

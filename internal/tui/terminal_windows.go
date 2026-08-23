@@ -3,6 +3,8 @@
 package tui
 
 import (
+	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"syscall"
@@ -51,7 +53,11 @@ func openCmdTerminal(dir string) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	go func() { _ = cmd.Wait() }()
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			fmt.Fprintf(os.Stderr, "[tui] 命令行进程退出错误: %v\n", err)
+		}
+	}()
 	return nil
 }
 
@@ -66,7 +72,11 @@ func writeClipboard(text string) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	go func() { _ = cmd.Wait() }()
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			fmt.Fprintf(os.Stderr, "[tui] 剪贴板写入进程退出错误: %v\n", err)
+		}
+	}()
 	return nil
 }
 

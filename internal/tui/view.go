@@ -160,6 +160,23 @@ func (m *model) renderList(t *tab, w, h int, active bool) string {
 	}
 
 	var b strings.Builder
+
+	// Show loading indicator if still loading.
+	if t.loading {
+		// Simple spinner animation based on time (will update on each frame).
+		b.WriteString(statusStyle.Render("  " + t.loadingMsg))
+		b.WriteString("\n")
+		return b.String()
+	}
+
+	// Show error message if load failed.
+	if t.loadErr != nil {
+		b.WriteString(statusStyle.Render("  读取失败: " + t.loadErr.Error()))
+		b.WriteString("\n")
+		return b.String()
+	}
+
+	// Render entries (virtual scrolling: only visible rows).
 	end := t.offset + visible
 	if end > len(t.entries) {
 		end = len(t.entries)
@@ -168,10 +185,7 @@ func (m *model) renderList(t *tab, w, h int, active bool) string {
 		b.WriteString(m.formatEntry(t.entries[i], t.selected[t.entries[i].Path], i == t.cursor, active, w))
 		b.WriteString("\n")
 	}
-	if t.loadErr != nil {
-		b.WriteString(statusStyle.Render("读取失败: " + t.loadErr.Error()))
-		b.WriteString("\n")
-	}
+
 	return b.String()
 }
 

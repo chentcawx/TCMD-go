@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"tcmd/internal/fs"
@@ -125,6 +126,12 @@ func TestBeginAndCancelBatchRename(t *testing.T) {
 	m := &model{active: 0}
 	m.panes[0] = &pane{tabs: []*tab{newTab(dir)}, active: 0}
 	m.panes[1] = &pane{tabs: []*tab{newTab(dir)}, active: 0}
+	// Wait for async loads to complete.
+	for _, p := range m.panes {
+		for _, tb := range p.tabs {
+			tb.waitForLoading(2 * time.Second)
+		}
+	}
 	m.panes[0].current().selected[filepath.Join(dir, "f1.txt")] = true
 
 	m.beginBatchRename()
