@@ -71,7 +71,34 @@ func (m *model) View() string {
 	right := m.renderPane(m.panes[1], m.active == 1, w-half-sepW)
 	panes := lipgloss.JoinHorizontal(lipgloss.Top, left, sep, right)
 	bottom := m.renderBottom(w)
-	return lipgloss.JoinVertical(lipgloss.Left, panes, bottom)
+	return clampRowWidth(lipgloss.JoinVertical(lipgloss.Left, panes, bottom), w)
+}
+
+// clampRowWidth truncates every line in s to at most max cells (display width).
+//
+// Why: terminal emulators report a content width via tea.WindowSizeMsg that
+// is sometimes one or two cells wider than the actual drawable area (a known
+// ConPTY / Windows Terminal quirk when the window is not maximized, where the
+// shell reports the full outer size including borders). Without this final
+// guard, the View() output can be wider than the terminal's drawable area; the
+// terminal then wraps the overflow onto the next line, smearing the right
+// pane's tabs onto the left pane's row and producing the "right tab covers
+// left tab" symptom that only shows up in non-maximized windows.
+//
+// Display width here is computed via lipgloss.Width (which strips ANSI
+// escapes) because we care about what the terminal will *paint*, not the
+// raw byte count.
+func clampRowWidth(s string, max int) string {
+	if max <= 0 {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		if w := lipgloss.Width(l); w > max {
+			lines[i] = truncateDW(l, max)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m *model) renderPane(p *pane, active bool, w int) string {
@@ -487,21 +514,128 @@ func selectedEntries(t *tab) []fs.Entry {
 
 // truncateDW cuts s to at most max DISPLAY cells (CJK counts as 2). Used for
 // the path line where alignment must hold under mixed scripts.
+//
+// ANSI-aware truncation: every CSI escape sequence (e.g. an unclosed colour
+// code from a styled tab label that has to be cut short) is preserved
+// verbatim and not counted against the visible-cell budget. The output is
+// closed with \x1b[0m whenever an SGR was still open, so the row that
+// follows in the pane is NOT painted with the same background colour.
+// Without this guard a wide tab bar in a narrow pane would clip the
+// active-tab style and the rest of the pane — and the other pane after
+// lipgloss.JoinHorizontal — would render with the leftover background,
+// producing the "right-pane background bleeding onto the left pane" symptom.
+//
+// Display-width budget uses lipgloss.Width() because runewidth.StringWidth
+// counts the bytes of escape sequences as visible cells, which both trips
+// the budget check and forces us to copy the very bytes we tried to
+// exclude.
 func truncateDW(s string, max int) string {
-	if runewidth.StringWidth(s) <= max {
+	if max <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= max {
 		return s
 	}
 	var b strings.Builder
 	w := 0
-	for _, r := range s {
+	for i := 0; i < len(s); {
+		// Preserve complete CSI escape sequences (and 2-byte ESC escapes)
+		// without consuming the visible-cell budget.
+		if s[i] == 0x1b {
+			esc := s[i:]
+			j := 1 // skip ESC
+			if j < len(esc) && esc[j] == '[' {
+				j++
+				for j < len(esc) {
+					c := esc[j]
+					j++
+					if c >= 0x40 && c <= 0x7e {
+						break
+					}
+				}
+			} else if j < len(esc) {
+				j++
+			}
+			b.WriteString(esc[:j])
+			i += j
+			continue
+		}
+		r, size := utf8DecodeRune(s[i:])
 		rw := runewidth.RuneWidth(r)
+		if rw < 0 {
+			rw = 0
+		}
 		if w+rw > max {
 			break
 		}
-		b.WriteRune(r)
+		b.WriteString(s[i : i+size])
 		w += rw
+		i += size
 	}
-	return b.String()
+	out := b.String()
+	if hasOpenSGR(out) {
+		out += "\x1b[0m"
+	}
+	return out
+}
+
+// utf8DecodeRune returns the rune at s and its byte length (1-4). Used
+// here instead of utf8.DecodeRune because the latter returns RuneError
+// at EOF which we don't want to treat as a real character.
+func utf8DecodeRune(s string) (rune, int) {
+	if len(s) == 0 {
+		return 0, 0
+	}
+	switch {
+	case s[0] < 0x80:
+		return rune(s[0]), 1
+	case s[0] < 0xC0:
+		return rune(s[0]), 1
+	case s[0] < 0xE0:
+		if len(s) < 2 {
+			return rune(s[0]), 1
+		}
+		return rune(s[0]&0x1F)<<6 | rune(s[1]&0x3F), 2
+	case s[0] < 0xF0:
+		if len(s) < 3 {
+			return rune(s[0]), 1
+		}
+		return rune(s[0]&0x0F)<<12 | rune(s[1]&0x3F)<<6 | rune(s[2]&0x3F), 3
+	default:
+		if len(s) < 4 {
+			return rune(s[0]), 1
+		}
+		return rune(s[0]&0x07)<<18 | rune(s[1]&0x3F)<<12 | rune(s[2]&0x3F)<<6 | rune(s[3]&0x3F), 4
+	}
+}
+
+// hasOpenSGR returns true when s ends with an SGR sequence that has been
+// started but not closed with a final reset ("\x1b[0m" or equivalent).
+// Cheap heuristic: scan from the last ESC byte to the end.
+func hasOpenSGR(s string) bool {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == 0x1b {
+			// i is the last ESC; check what follows.
+			rest := s[i:]
+			// If the run ends with a CSI ... m final, consider it closed.
+			// Otherwise the row still has an open colour.
+			if len(rest) == 1 || rest[1] != '[' {
+				return false
+			}
+			for j := len(rest) - 1; j >= 2; j-- {
+				c := rest[j]
+				if c >= 0x40 && c <= 0x7e {
+					// final byte of an escape sequence
+					if c == 'm' && strings.HasSuffix(rest, "\x1b[0m") {
+						return false
+					}
+					return true
+				}
+			}
+			return true
+		}
+	}
+	return false
 }
 
 // padRightDW right-pads s with spaces until its DISPLAY width reaches n.
