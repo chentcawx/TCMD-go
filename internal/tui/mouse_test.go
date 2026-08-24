@@ -148,6 +148,45 @@ func TestHandleLeftClickActivatesPaneOnlyOnPathBar(t *testing.T) {
 	}
 }
 
+// TestRightPaneTabClickSwitchesTab verifies that clicking a tab in the right
+// pane correctly switches to that tab. This is a regression test for the bug
+// where tabAt used global X coordinates instead of pane-local coordinates,
+// causing all right-pane tab clicks to return -1 (no match).
+func TestRightPaneTabClickSwitchesTab(t *testing.T) {
+	m := newTestModel()
+	m.width = 80
+	m.height = 24
+
+	// Left pane: single tab at C:\work
+	m.panes[0].tabs = []*tab{
+		{path: "C:\\work", offset: 0, cursor: 0, entries: makeEntries(10), selected: make(map[string]bool)},
+	}
+
+	// Right pane: TWO tabs - first at D:\tools, second at E:\backup
+	m.panes[1].tabs = []*tab{
+		{path: "D:\\tools", offset: 0, cursor: 0, entries: makeEntries(5), selected: make(map[string]bool)},
+		{path: "E:\\backup", offset: 0, cursor: 0, entries: makeEntries(3), selected: make(map[string]bool)},
+	}
+	m.panes[1].active = 0 // Right pane starts on first tab
+	m.active = 0          // Left pane is active initially
+
+	sc := m.sepCol()
+	// Click on the SECOND tab in the right pane's tab bar.
+	// Tab 0 "work" is ~6 cells, space at 6, Tab 1 "backup" starts at ~7.
+	// In global coordinates: right pane starts at sc+sepWidth=41, so x=48 lands on "backup".
+	tabBarX := sc + sepWidth + 8
+	t.Logf("sepCol=%d, clicking at x=%d (right pane starts at %d)", sc, tabBarX, sc+sepWidth)
+
+	m.handleLeftClick(tabBarX, rowTabs)
+
+	if m.active != 1 {
+		t.Fatalf("click on right pane tab bar should activate right pane, active=%d want 1", m.active)
+	}
+	if m.panes[1].active != 1 {
+		t.Fatalf("click should switch to tab 1 (backup), but active=%d", m.panes[1].active)
+	}
+}
+
 func TestWheelScrollCallsIncrementRow(t *testing.T) {
 	m := newTestModel()
 	m.width = 80

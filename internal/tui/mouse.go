@@ -153,7 +153,14 @@ func (m *model) handleLeftClick(x, y int) {
 	tb := m.panes[p]
 	// Tab bar: pick the tab whose label spans this X.
 	if y == rowTabs {
-		if idx := tb.tabAt(x, m.width); idx >= 0 {
+		// Convert global X to pane-local X for accurate tab hit-testing.
+		// tabAt computes positions starting from 0 within the pane, so we must
+		// subtract the pane's left offset (sepCol + sepWidth for the right pane).
+		localX := x
+		if p == 1 {
+			localX = x - m.sepCol() - sepWidth
+		}
+		if idx := tb.tabAt(localX, m.width); idx >= 0 {
 			tb.active = idx
 			m.saveConfig()
 		}

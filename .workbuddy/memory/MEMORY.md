@@ -70,3 +70,4 @@ Tab 切面板 · ↑↓/jk 移动 · Enter 进入 · Backspace 上级 · Space/I
 - **update.go 导入别名**：必须用 `tea "github.com/charmbracelet/bubbletea"`，否则 `tea.KeyRunes` 等引用报错。
 - **`formatTime` 零值占位符必须与 `timeFieldW` 一致**：之前返回 16 空格（旧格式宽），导致 padLeftDW 输入宽于 timeFieldW=11，行宽溢出；改为 11 空格后对齐。
 - **width 预算 off-by-one 根因**：formatEntry 的 rightSideW 公式必须包含所有分隔空格（mark+sp+size+sp+time=27，不是 26 或 28），否则 short-name 行溢出 1 格。
+- **tabAt 坐标系统**：`tabAt(x, w)` 接收全局 X 坐标但内部按 pane 本地坐标累加（从 pos=0 开始）。调用方必须预先转换：左面板直接用 x，右面板需减去 `sepCol() + sepWidth`。`handleLeftClick` 的 tab bar 分支已做此转换（mouse.go:155-165）。
