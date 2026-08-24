@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
+	"tcmd/internal/fs"
 )
 
 // TestViewRowsStayWithinWidth is the regression test for the "non-maximized
@@ -31,7 +33,8 @@ func TestViewRowsStayWithinWidth(t *testing.T) {
 				},
 				{
 					tabs: []*tab{
-						{path: `C:\Users`, entries: fakeEntries("user", 5)},
+						{path: `C:\Users`, entries: append(fakeEntries("user", 5),
+							fs.Entry{Name: "会议记录——2026年最终版交付文档.md", Path: "x", IsDir: false, Size: 12345})},
 						{path: `C:\Users\.auto-coder`},
 					},
 					active: 0,
@@ -49,6 +52,16 @@ func TestViewRowsStayWithinWidth(t *testing.T) {
 			dw := lipgloss.Width(line)
 			if dw > w {
 				t.Fatalf("width=%d row %d: line display width %d > %d\nline=%q", w, i, dw, w, line)
+			}
+			// Second oracle: the TRUE painted width in an East-Asian
+			// terminal counts ambiguous glyphs (em dash '—', full-width
+			// punctuation) as 2 cells. lipgloss.Width under-counts those,
+			// so it would miss an em-dash overflow. Strip ANSI then measure
+			// with runewidth — this is the width the terminal actually
+			// paints, and the one that triggers the phantom wrap line.
+			painted := runewidth.StringWidth(stripANSI(line))
+			if painted > w {
+				t.Fatalf("width=%d row %d: painted width %d > %d (em-dash/font overflow would wrap)\nline=%q", w, i, painted, w, line)
 			}
 		}
 	}

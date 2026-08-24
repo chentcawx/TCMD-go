@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 	"tcmd/internal/fs"
 )
@@ -283,5 +284,54 @@ func TestTruncateDWUsesRunewidthWidth(t *testing.T) {
 	// Regression guard: under-budgeting must never let a row exceed its max.
 	if got := runewidth.StringWidth(truncateDW(long, 10)); got > 10 {
 		t.Fatalf("truncateDW exceeded max: %d > 10", got)
+	}
+}
+
+// TestTruncateDWGuardUsesRunewidthWidth is the regression test that catches
+// the SPECIFIC v0.4.4 failure: an early-return fast-path
+// `if lipgloss.Width(s) <= max { return s }`. lipgloss counts em dash as 1
+// cell, so for max=3 the two-dash string "——" (lipgloss width 2) slipped
+// past the guard UNtruncated (runewidth width 4) and wrapped onto a phantom
+// extra line in the user's CJK terminal. The bug is invisible to
+// TestTruncateDWUsesRunewidthWidth above because there lipgloss.Width also
+// happens to be <= max. Here lipgloss.Width(2) <= max(3) but the REAL width
+// (4) > max, so only the correct runewidth loop must truncate. After the fix
+// truncateDW must never return a string wider than `max` (measured the way
+// the terminal paints, i.e. runewidth).
+func TestTruncateDWGuardUsesRunewidthWidth(t *testing.T) {
+	cases := []struct {
+		in   string
+		max  int
+		want int // expected runewidth width of the truncated output
+	}{
+		// lipgloss width (2) <= max (3) but real width (4) > max: MUST truncate.
+		{"——", 3, 2},
+		{"———", 3, 2},                                   // 3 dashes: keep 1 (2 cells)
+		{"报告——终稿.md", 6, 6},                           // 3 CJK(2 each) + 1 dash(2) = 8 -> keep 3 cells worth
+		{"a——b", 3, 3},                                   // a(1)+dash(2)=3 fits exactly, no overflow
+		{"——长文件名.txt", 4, 4},                          // dashes(4) == max, must not exceed
+		{"普通——文件名.md", 5, 4},                         // dash pair sits at the 4-cell boundary
+	}
+	for _, c := range cases {
+		got := runewidth.StringWidth(truncateDW(c.in, c.max))
+		if got != c.want {
+			t.Fatalf("truncateDW(%q,%d) runewidth width=%d, want %d", c.in, c.max, got, c.want)
+		}
+		// Hard invariant: output must never be wider than the terminal paints.
+		if got > c.max {
+			t.Fatalf("truncateDW(%q,%d) overflowed: width=%d > max=%d", c.in, c.max, got, c.max)
+		}
+	}
+	// Styled (ANSI) em dash must ALSO be truncated correctly and stay ANSI-safe.
+	styled := "\x1b[1;37;44m" + "——" + "\x1b[0m"
+	out := truncateDW(styled, 3)
+	if runewidth.StringWidth(out) > 3 {
+		// runewidth mis-counts ANSI, so re-measure visible cells via lipgloss.
+		if lipgloss.Width(out) > 3 {
+			t.Fatalf("styled em-dash overflowed: lipgloss width=%d > 3 (out=%q)", lipgloss.Width(out), out)
+		}
+	}
+	if !strings.HasSuffix(out, "\x1b[0m") {
+		t.Fatalf("styled truncation dropped trailing reset; out=%q", out)
 	}
 }

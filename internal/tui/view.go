@@ -594,16 +594,30 @@ func selectedEntries(t *tab) []fs.Entry {
 // lipgloss.JoinHorizontal — would render with the leftover background,
 // producing the "right-pane background bleeding onto the left pane" symptom.
 //
-// Display-width budget uses lipgloss.Width() because runewidth.StringWidth
-// counts the bytes of escape sequences as visible cells, which both trips
-// the budget check and forces us to copy the very bytes we tried to
-// exclude.
+// Why this loop and NOT a fast-path guard: a tempting optimisation is
+// `if lipgloss.Width(s) <= max { return s }`, but that guard is WRONG for
+// ambiguous-width glyphs. lipgloss.Width counts an em dash '—' as 1 cell,
+// whereas East-Asian terminals (e.g. Windows Terminal on a CJK locale)
+// paint it as 2. So a filename like "报告——终稿" would pass the lipgloss
+// guard (under-budgeted) yet actually overflow the row by several cells in
+// the real terminal, which then wraps the overflow onto a phantom extra
+// line below the filename — the exact "extra > row" bug. The loop below is
+// ANSI-aware and budgets each visible rune with runewidth.RuneWidth (em
+// dash = 2), so it always matches what the terminal paints. It also handles
+// the "already fits" case naturally (it just copies every rune until the
+// budget is exhausted), so the guard is pure downside and is intentionally
+// omitted.
+//
+// Note: runewidth.StringWidth is NOT a safe substitute for this loop
+// either — it treats ANSI escape sequences as visible cells (it reports
+// width 10 for "\x1b[44mabc\x1b[0m"), which would over-budget styled
+// strings. Only the per-rune loop, which skips ESC sequences, is correct.
 func truncateDW(s string, max int) string {
 	if max <= 0 {
 		return ""
 	}
-	if lipgloss.Width(s) <= max {
-		return s
+	if s == "" {
+		return ""
 	}
 	var b strings.Builder
 	w := 0
