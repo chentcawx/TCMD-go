@@ -3,11 +3,21 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbletea"
 	"tcmd/internal/fs"
+)
+
+// SortField identifies the column used for sorting in a tab's file listing.
+type SortField int
+
+const (
+	SortByName SortField = iota
+	SortByModTime
+	SortBySize
 )
 
 // tab is one open directory within a pane. A pane holds several tabs, which is
@@ -22,10 +32,21 @@ type tab struct {
 	loading     bool                  // true while async reload is in progress
 	loadingMsg  string                // status message shown during loading
 	_reloadCh   chan tabReloadMsg     // internal channel for async reload result
+
+	// Sorting state: applied after every load so the listing is always sorted.
+	// Default: name ascending.
+	sortField SortField
+	sortAsc   bool
+
+	// Quick-locate accumulator: when the user presses a letter key while
+	// browsing, the next letter (if any) appends to this buffer and the
+	// cursor jumps to the first entry whose Name starts with the full buffer
+	// (case-insensitive). Non-letter keys clear the buffer.
+	lastQuickType []rune
 }
 
 func newTab(path string) *tab {
-	t := &tab{path: path, selected: make(map[string]bool)}
+	t := &tab{path: path, selected: make(map[string]bool), sortField: SortByName, sortAsc: true}
 	// Start async reload; t.entries stays nil until completion.
 	t.asyncReload()
 	return t
@@ -91,13 +112,56 @@ func (t *tab) applyReloadResult(entries []fs.Entry, err error) {
 		return
 	}
 	t.loadErr = nil
-	t.entries = entries
-	if t.cursor >= len(entries) {
-		t.cursor = len(entries) - 1
+	t.entries = sortAndClampCursor(t.entries, entries, t.cursor, t.sortField, t.sortAsc)
+	if t.cursor >= len(t.entries) {
+		t.cursor = len(t.entries) - 1
 	}
 	if t.cursor < 0 {
 		t.cursor = 0
 	}
+}
+
+// sortAndClampCursor sorts entries by the requested field/direction and then
+// clamps cursor to the new length. Used when a fresh listing replaces the
+// previous one so the sort always takes effect immediately.
+func sortAndClampCursor(prev []fs.Entry, next []fs.Entry, cursor int, field SortField, asc bool) []fs.Entry {
+	out := make([]fs.Entry, len(next))
+	copy(out, next)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].IsDir != out[j].IsDir {
+			return out[i].IsDir // dirs first
+		}
+		var less bool
+		switch field {
+		case SortByModTime:
+			less = out[i].ModTime.Before(out[j].ModTime)
+		case SortBySize:
+			less = out[i].Size < out[j].Size
+		default:
+			less = strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
+		}
+		if !asc {
+			less = !less
+		}
+		return less
+	})
+	if cursor >= len(out) {
+		cursor = len(out) - 1
+	}
+	// Try to keep the same item under the cursor by name (stable for re-sorts).
+	if cursor >= 0 && len(prev) > 0 {
+		target := prev[cursor].Name
+		for i, e := range out {
+			if strings.EqualFold(e.Name, target) {
+				cursor = i
+				break
+			}
+		}
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	return out
 }
 
 // tabReloadMsg is the bubbletea message delivered after async reload completes.
@@ -255,6 +319,12 @@ type model struct {
 	lastClickY int
 	lastClickT time.Time
 
+	// sort column click detection: tracks the last x-position and timestamp
+	// of a sort-column click within the list header (rowList) so a second
+	// click on the same column reverses direction.
+	lastSortClickX     int
+	lastSortClickTime  time.Time
+
 	// drive picker overlay state. drives is the list of available drive roots
 	// (e.g. ["C:\\", "D:\\"]); pickerIndex is the currently highlighted item.
 	drives     []string
@@ -326,6 +396,100 @@ func (m *model) curPane() *pane { return m.panes[m.active] }
 func (m *model) curTab() *tab   { return m.curPane().current() }
 func (m *model) otherPane() *pane { return m.panes[1-m.active] }
 
+// quickLocate appends r to the current tab's quick-locate buffer and jumps to
+// the first entry whose Name starts with that buffer (case-insensitive). The
+// search wraps around: if nothing follows the current cursor, it restarts at
+// index 0. Non-letter input on the tab clears the buffer (handled by caller).
+func (m *model) quickLocate(r rune) {
+	t := m.curTab()
+	if len(t.entries) == 0 {
+		return
+	}
+	// Accumulate typed letters; clamp to a sensible buffer so a slow typer
+	// doesn't build an unreasonably long prefix across unrelated keystrokes.
+	t.lastQuickType = append(t.lastQuickType, r)
+	if len(t.lastQuickType) > 8 {
+		t.lastQuickType = t.lastQuickType[len(t.lastQuickType)-8:]
+	}
+	// Search forward from cursor+1; wrap around if not found.
+	prefix := string(t.lastQuickType)
+	start := (t.cursor + 1) % len(t.entries)
+	for i := 0; i < len(t.entries); i++ {
+		idx := (start + i) % len(t.entries)
+		if strings.HasPrefix(strings.ToLower(t.entries[idx].Name), prefix) {
+			t.cursor = idx
+			m.ensureCursorVisible(t)
+			return
+		}
+	}
+	// Nothing matched — shake the buffer so the next letter starts fresh.
+	t.lastQuickType = t.lastQuickType[:0]
+}
+
+// cycleSortField advances sortField by +1 mod 3 (name → date → size → name…)
+// and resets the cursor to 0 so the user sees the new top immediately.
+func (m *model) cycleSortField() {
+	t := m.curTab()
+	t.sortField = (t.sortField + 1) % 3
+	t.applyCurrentSort()
+	t.cursor = 0
+	t.offset = 0
+	m.status = sortFieldLabel(t.sortField) + " 正序"
+}
+
+// reverseSort toggles sortAsc and re-applies. No cursor change.
+func (m *model) reverseSort() {
+	t := m.curTab()
+	t.sortAsc = !t.sortAsc
+	t.applyCurrentSort()
+	t.cursor = 0
+	t.offset = 0
+	m.status = sortFieldLabel(t.sortField) + " " + func() string { if t.sortAsc { return "正序" }; return "反序" }()
+}
+
+// applyCurrentSort re-sorts the current tab's entries in place using the
+// tab's current sort field/direction, then clamps cursor.
+func (t *tab) applyCurrentSort() {
+	t.entries = sortAndClampCursor(nil, t.entries, t.cursor, t.sortField, t.sortAsc)
+}
+
+// clearQuickType drops the accumulated quick-locate buffer so the next
+// letter starts a fresh search instead of extending a stale one.
+func (t *tab) clearQuickType() {
+	t.lastQuickType = t.lastQuickType[:0]
+}
+
+// sortFieldLabel returns a short human-readable label for the field enum.
+func sortFieldLabel(f SortField) string {
+	switch f {
+	case SortByName:
+		return "名称"
+	case SortByModTime:
+		return "日期"
+	case SortBySize:
+		return "大小"
+	default:
+		return "名称"
+	}
+}
+
+// timeFmt is the display format for the time column. Picked as "01-02 15:04"
+// (11 display cells) instead of the fuller "2006-01-02 15:04" (16 cells) so
+// narrow panes (>=30 cols) still have room for name+size+time without
+// overflowing. The year is rarely needed in a file-listing context; month+day
+// + 24h time is sufficient for sorting and scanning.
+const timeFmt = "01-02 15:04"
+
+// formatTime returns the entry's ModTime formatted for the time column, or
+// a blank 11-cell placeholder when ModTime is the zero value (matching
+// timeFieldW in view.go so padLeftDW never inflates the row width).
+func formatTime(e fs.Entry) string {
+	if e.ModTime.IsZero() {
+		return strings.Repeat(" ", 11)
+	}
+	return e.ModTime.Format(timeFmt)
+}
+
 func (m *model) moveCursor(d int) {
 	t := m.curTab()
 	if len(t.entries) == 0 {
@@ -349,6 +513,13 @@ func (m *model) pageMove(d int) {
 		}
 	}
 	m.moveCursor(d * page)
+}
+
+// incrementRow moves the cursor by exactly d rows (d > 0 = down, d < 0 = up).
+// Used by mouse wheel events so each wheel tick advances the highlight by one
+// file rather than jumping by half a screen.
+func (m *model) incrementRow(d int) {
+	m.moveCursor(d)
 }
 
 func (m *model) toggleSelect() {
@@ -415,6 +586,7 @@ func (m *model) enterDir() {
 		return
 	}
 	m.curPane().tabs[m.curPane().active] = newTab(e.Path)
+	m.curTab().clearQuickType()
 	m.saveConfig()
 }
 
@@ -428,11 +600,13 @@ func (m *model) upDir() {
 	// dump the highlight back to the first row.
 	child := filepath.Base(t.path)
 	m.curPane().tabs[m.curPane().active] = newTabAt(parent, child)
+	m.curTab().clearQuickType()
 	m.saveConfig()
 }
 
 func (m *model) newTabHere() {
 	m.curPane().addTab(m.curTab().path)
+	m.curTab().clearQuickType()
 	m.saveConfig()
 }
 
@@ -443,6 +617,7 @@ func (m *model) switchTab(d int) {
 		return
 	}
 	p.active = (p.active + d + n) % n
+	m.curTab().clearQuickType()
 	m.saveConfig()
 }
 
@@ -472,6 +647,19 @@ func (m *model) selectedOrCurrent() []string {
 func (m *model) reloadBoth() {
 	for _, p := range m.panes {
 		p.current().asyncReload()
+	}
+}
+
+// reapplySort re-sorts the active tab using its current field/direction, then
+// clamps the cursor. Called when the user explicitly requests a sort change.
+func (m *model) reapplySort() {
+	t := m.curTab()
+	t.applyCurrentSort()
+	if t.cursor >= len(t.entries) {
+		t.cursor = len(t.entries) - 1
+	}
+	if t.cursor < 0 {
+		t.cursor = 0
 	}
 }
 

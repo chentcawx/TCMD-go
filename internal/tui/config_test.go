@@ -76,6 +76,32 @@ func TestApplyConfigFallback(t *testing.T) {
 	}
 }
 
+// TestApplyConfigNormalizeDriveRoot fixes a legacy path shape that can leak
+// into tcmd.json after the double-click-path-bar root-return bug was present:
+// "E:." (missing trailing backslash). filepath.IsAbs("E:.") is false on Windows,
+// so without normalization the tab would silently fall back to homeDir() on the
+// next restart. normalizeTabPath repairs it to the canonical "E:\\" form.
+func TestApplyConfigNormalizeDriveRoot(t *testing.T) {
+	m := InitialModel()
+	c := &Config{
+		Active: 0,
+		Panes: [2]paneState{
+			{Tabs: []string{"E:.", "C:\\"}, Active: 0},
+			{Tabs: []string{"D:."}, Active: 0},
+		},
+	}
+	m.ApplyConfig(c)
+	if got := m.panes[0].tabs[0].path; got != "E:\\" {
+		t.Fatalf("E:. not normalized: got %q", got)
+	}
+	if got := m.panes[0].tabs[1].path; got != "C:\\" {
+		t.Fatalf("C:\\ corrupted: got %q", got)
+	}
+	if got := m.panes[1].tabs[0].path; got != "D:\\" {
+		t.Fatalf("D:. not normalized: got %q", got)
+	}
+}
+
 // TestCJKInput verifies IME-composed CJK text is inserted at the rune cursor
 // without byte-slicing mojibake, and that the cursor advances by rune count.
 func TestCJKInput(t *testing.T) {

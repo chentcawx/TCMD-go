@@ -245,18 +245,49 @@ func (m *model) renderList(t *tab, w, h int, active bool) string {
 }
 
 // formatEntry lays out one row: select-mark, name (fixed display width),
-// size or <DIR>. Padding and truncation use display width (runes != cells for
-// CJK), so Chinese filenames no longer overflow the column and the two panes
-// stay horizontally aligned. The cursor highlight is drawn only on the active
-// pane so it is unambiguous which side the keys control.
+// size or <DIR>, and a fixed-width time column (last-modified). Padding and
+// truncation use display width (runes != cells for CJK), so Chinese filenames
+// no longer overflow the column and the two panes stay horizontally aligned.
+// The cursor highlight is drawn only on the active pane so it is unambiguous
+// which side the keys control.
 func (m *model) formatEntry(e fs.Entry, selected, cursor, active bool, w int) string {
 	mark := "  "
 	if selected {
 		mark = "* "
 	}
-	nameFieldW := w - 2 - 13 // mark(2) + size(12) + separator(1)
+	// Layout budget: mark(2) + name(field) + sep(1) + size(12) + sep(1) + time(11) = 26 + nameFieldW.
+	// On terminals narrower than 31 cols we fall back to the old layout
+	// (no time column) to avoid the row overflowing and triggering wrap.
+	//
+	// Why 31 and not 26: padRightDW pads the name field to exactly nameFieldW,
+	// but for very short names the trailing-space padding inflates lipgloss.Width
+	// by 1 (lipgloss counts trailing blanks as visible). By requiring w >= 31
+	// (nameFieldW >= 5), the name field is wide enough that short names don't
+	// produce a trailing-space-only overflow. For w < 31 the fallback layout
+	// (mark+name+size, no time) keeps rows at exactly w cells.
+	const timeFieldW = 11
+	const rightSideW = 2 + 1 + 12 + 1 + timeFieldW // mark + sp + size + sp + time = 27
+	nameFieldW := w - rightSideW
 	if nameFieldW < 4 {
-		nameFieldW = 4
+		// Narrow terminal: drop the time column entirely and use the legacy
+		// layout (mark + name + size) that fits.
+		nameFieldW = w - 2 - 13
+		if nameFieldW < 4 {
+			nameFieldW = 4
+		}
+		name := padRightDW(truncateDW(e.Name, nameFieldW), nameFieldW)
+		if e.IsDir {
+			name = dirStyle.Render(name)
+		}
+		sizeField := "<DIR>"
+		if !e.IsDir {
+			sizeField = humanSize(e.Size)
+		}
+		line := mark + name + " " + padLeftDW(sizeField, 12)
+		if cursor && active {
+			return cursorStyle.Render(line)
+		}
+		return line
 	}
 	// Truncate to the column width FIRST (display cells, CJK-safe), then pad.
 	// Without truncation a filename longer than the column would overflow,
@@ -270,7 +301,8 @@ func (m *model) formatEntry(e fs.Entry, selected, cursor, active bool, w int) st
 	if !e.IsDir {
 		sizeField = humanSize(e.Size)
 	}
-	line := mark + name + " " + padLeftDW(sizeField, 12)
+	timeStr := padLeftDW(formatTime(e), timeFieldW)
+	line := mark + name + " " + padLeftDW(sizeField, 12) + " " + timeStr
 	if cursor && active {
 		return cursorStyle.Render(line)
 	}

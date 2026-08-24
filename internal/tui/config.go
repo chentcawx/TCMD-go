@@ -48,6 +48,13 @@ type paneState struct {
 	// TabCursor stores the cursor position for each tab, indexed by tab position.
 	// Zero values are ignored on load (cursor defaults to 0).
 	TabCursor []int `json:"tabCursor,omitempty"`
+	// TabSortField stores the active sort field for each tab (0=name, 1=date,
+	// 2=size), indexed by tab position. Zero value means name — matches the
+	// default when the field is missing from an existing config file.
+	TabSortField []int `json:"tabSortField,omitempty"`
+	// TabSortAsc stores whether each tab's sort is ascending (true) or
+	// descending (false). Defaults to true when missing from existing config.
+	TabSortAsc []bool `json:"tabSortAsc,omitempty"`
 }
 
 // AssocAction identifies which key gesture an association applies to.
@@ -146,6 +153,26 @@ func dirExists(path string) bool {
 	return err == nil && fi.IsDir()
 }
 
+// normalizeTabPath patches legacy malformed paths that can leak into the
+// config file. The most common case is a Windows drive root stored as "E:."
+// (missing trailing backslash) instead of "E:\\"; filepath.IsAbs("E:.") is
+// true but the path does not resolve to a real directory, so the tab would
+// silently fall back to homeDir() on the next restart. We repair it in-place
+// so the saved session is restored exactly as the user left it.
+func normalizeTabPath(p string) string {
+	// Drive-root-without-trailing-slash: single-letter + colon + optional dot/
+	// backslash, with nothing else. "E:.", "E:\", "E:" all match here; we
+	// normalise to the canonical form with the trailing backslash.
+	if len(p) >= 2 && p[1] == ':' {
+		rest := p[2:]
+		clean := strings.TrimRight(rest, `\ /.`)
+		if clean == "" {
+			return p[:2] + "\\"
+		}
+	}
+	return p
+}
+
 // ApplyConfig rebuilds the two panes from a saved session. Invalid or missing
 // tab paths fall back to the user home directory so a moved/deleted folder
 // never crashes startup. Unknown fields are ignored.
@@ -160,6 +187,7 @@ func (m *model) ApplyConfig(c *Config) {
 		}
 		tabs := make([]*tab, 0, len(ps.Tabs))
 		for j, pth := range ps.Tabs {
+			pth = normalizeTabPath(pth)
 			if !dirExists(pth) {
 				pth = homeDir()
 			}
@@ -173,6 +201,22 @@ func (m *model) ApplyConfig(c *Config) {
 				if t.cursor < 0 {
 					t.cursor = 0
 				}
+			}
+			// Restore sort state. SortField zero (= name) is the default and
+			// needs no explicit restoration; only non-zero or explicit bools
+			// that differ from defaults are applied.
+			if j < len(ps.TabSortField) {
+				switch ps.TabSortField[j] {
+				case 1:
+					t.sortField = SortByModTime
+				case 2:
+					t.sortField = SortBySize
+				default:
+					t.sortField = SortByName
+				}
+			}
+			if j < len(ps.TabSortAsc) {
+				t.sortAsc = ps.TabSortAsc[j]
 			}
 			tabs = append(tabs, t)
 		}
@@ -208,6 +252,11 @@ func (m *model) saveConfig() {
 		// Capture cursor positions so they survive a restart.
 		for _, t := range p.tabs {
 			ps.TabCursor = append(ps.TabCursor, t.cursor)
+		}
+		// Capture sort state so it survives a restart.
+		for _, t := range p.tabs {
+			ps.TabSortField = append(ps.TabSortField, int(t.sortField))
+			ps.TabSortAsc = append(ps.TabSortAsc, t.sortAsc)
 		}
 		c.Panes[i] = ps
 	}

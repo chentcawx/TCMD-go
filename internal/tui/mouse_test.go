@@ -148,7 +148,7 @@ func TestHandleLeftClickActivatesPaneOnlyOnPathBar(t *testing.T) {
 	}
 }
 
-func TestWheelScrollCallsPageMove(t *testing.T) {
+func TestWheelScrollCallsIncrementRow(t *testing.T) {
 	m := newTestModel()
 	m.width = 80
 	m.height = 24

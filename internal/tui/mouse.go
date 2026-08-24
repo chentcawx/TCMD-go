@@ -98,9 +98,9 @@ func (m *model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.Button {
 	case tea.MouseButtonWheelUp:
-		m.pageMove(-1)
+		m.incrementRow(-1)
 	case tea.MouseButtonWheelDown:
-		m.pageMove(1)
+		m.incrementRow(1)
 	case tea.MouseButtonLeft:
 		if msg.Action != tea.MouseActionPress {
 			return m, nil
@@ -168,15 +168,102 @@ func (m *model) handleLeftClick(x, y int) {
 	if idx < 0 {
 		return
 	}
-	tb.current().cursor = idx
-	// Keep the clicked row within the visible window.
-	m.ensureCursorVisible(tb.current())
+	t := tb.current()
+	t.cursor = idx
+	m.ensureCursorVisible(t)
+	// Shift+click on the sort column header toggles sort direction.
+	// The sort column header is rowList (the first list row) — we detect
+	// clicks there by checking if y == rowList and x falls in the size/time
+	// column region. Actually, per the feature spec: single-click switches
+	// sort column, Shift+click reverses. We map X positions within the list
+	// to sort columns based on the fixed layout from formatEntry.
+	if y == rowList {
+		m.handleSortColumnClick(x, t)
+	}
+}
+
+// handleSortColumnClick maps the click X coordinate to a sort field and either
+// switches to that field (single click) or toggles asc/desc (shift+click).
+// Layout: mark(2) + name + sp(1) + size(12) + sp(1) + time(11).
+// Name column: x in [0, nameFieldW+1), size column: x in [nameFieldW+2, nameFieldW+14),
+// time column: x >= nameFieldW+14. For narrow panes (< 31 cols) the time column
+// is hidden, so size column spans to the end.
+func (m *model) handleSortColumnClick(x int, t *tab) {
+	// Estimate nameFieldW from the pane width. The right-side fixed overhead
+	// is 2(mark)+1(sp)+12(size)+1(sp)+11(time)=27 for wide panes, or 2+1+12=15
+	// for narrow panes (<31 cols). We conservatively use 27 as the threshold.
+	const timeFieldW = 11
+	rightSideWide := 2 + 1 + 12 + 1 + 11 // mark + sp + size + sp + time = 27
+	rightSideNarrow := 2 + 1 + 12        // mark + sp + size = 15
+	paneW := m.width/2 - 1
+	if paneW < 31 {
+		rightSideWide = rightSideNarrow
+	}
+	nameFieldW := paneW - rightSideWide
+	if nameFieldW < 4 {
+		nameFieldW = 4
+	}
+	sizeColStart := nameFieldW + 2   // after name + space
+	sizeColEnd := sizeColStart + 12  // size field width
+	timeColStart := sizeColEnd + 1   // after size + space
+	if x < sizeColStart {
+		// Clicked name column.
+		if t.sortField != SortByName {
+			t.sortField = SortByName
+			t.applyCurrentSort()
+			t.cursor = 0
+			t.offset = 0
+			m.status = sortFieldLabel(SortByName) + " 正序"
+		} else if m.lastSortClickX == x && m.lastSortClickTime.Sub(time.Now()) < doubleClickMS {
+			// Double-click on same column = reverse.
+			t.sortAsc = !t.sortAsc
+			t.applyCurrentSort()
+			t.cursor = 0
+			t.offset = 0
+			m.status = sortFieldLabel(SortByName) + " " + func() string { if t.sortAsc { return "正序" }; return "反序" }()
+		}
+	} else if x < timeColStart {
+		// Clicked size column.
+		if t.sortField != SortBySize {
+			t.sortField = SortBySize
+			t.applyCurrentSort()
+			t.cursor = 0
+			t.offset = 0
+			m.status = sortFieldLabel(SortBySize) + " 正序"
+		} else if m.lastSortClickX == x && m.lastSortClickTime.Sub(time.Now()) < doubleClickMS {
+			t.sortAsc = !t.sortAsc
+			t.applyCurrentSort()
+			t.cursor = 0
+			t.offset = 0
+			m.status = sortFieldLabel(SortBySize) + " " + func() string { if t.sortAsc { return "正序" }; return "反序" }()
+		}
+	} else {
+		// Clicked time column.
+		if t.sortField != SortByModTime {
+			t.sortField = SortByModTime
+			t.applyCurrentSort()
+			t.cursor = 0
+			t.offset = 0
+			m.status = sortFieldLabel(SortByModTime) + " 正序"
+		} else if m.lastSortClickX == x && m.lastSortClickTime.Sub(time.Now()) < doubleClickMS {
+			t.sortAsc = !t.sortAsc
+			t.applyCurrentSort()
+			t.cursor = 0
+			t.offset = 0
+			m.status = sortFieldLabel(SortByModTime) + " " + func() string { if t.sortAsc { return "正序" }; return "反序" }()
+		}
+	}
+	m.lastSortClickX = x
+	m.lastSortClickTime = time.Now()
 }
 
 // handleDoubleClick opens or enters the item under the clicked cell. A
 // directory is entered in-place (matching Total Commander's double-click); a
 // file is launched with the OS default association via the system "open" verb
 // (the genuine Explorer action, not a `start` approximation).
+// If the click lands on the path bar, it navigates up to the clicked
+// path segment (e.g. double-clicking "Documents" in "C:\Users\chenwei\Documents"
+// jumps to C:\Users\chenwei).
 func (m *model) handleDoubleClick(x, y int) {
 	p, onPane := m.mousePaneAt(x)
 	if !onPane {
@@ -186,6 +273,17 @@ func (m *model) handleDoubleClick(x, y int) {
 		m.active = p
 	}
 	tb := m.panes[p]
+	// Path bar: navigate to the segment under the cursor.
+	if y == rowPath {
+		if segIdx := pathSegmentAt(tb.current().path, x); segIdx >= 0 {
+			target := pathPrefixAtSegment(tb.current().path, segIdx)
+			if target != "" && target != tb.current().path {
+				tb.tabs[tb.active] = newTabAt(target, filepath.Base(tb.current().path))
+				m.saveConfig()
+			}
+		}
+		return
+	}
 	idx := m.mouseListRow(p, y)
 	if idx < 0 {
 		return
@@ -542,4 +640,142 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// pathSegmentAt walks the display layout of path and returns the index of the
+// segment whose label covers display column x, or -1. Segments are split on
+// filepath.Separator (or colon for drive letters like "C:"). The layout matches
+// what renderPane draws: the raw path string is truncated to pane width then
+// right-padded, so we reconstruct the same runewidth layout.
+func pathSegmentAt(rawPath string, x int) int {
+	// Split path into segments, keeping drive letters attached to the first
+	// segment (e.g. "C:" stays with "Users" on Windows).
+	raw := strings.TrimRight(rawPath, `\ /`)
+	if raw == "" {
+		return -1
+	}
+	segs := splitPathSegments(raw)
+	if len(segs) == 0 {
+		return -1
+	}
+	// Reconstruct the displayed string (same as renderPane's truncateDW + pad).
+	// The path bar displays the full path (up to pane width), so we just need
+	// the cumulative runewidth of each segment including its separator.
+	cum := 0
+	for i, seg := range segs {
+		segW := runeWidthOf(seg)
+		if i < len(segs)-1 {
+			segW += 1 // one separator char after each segment
+		}
+		if x >= cum && x < cum+segW {
+			return i
+		}
+		cum += segW
+	}
+	return -1
+}
+
+// splitPathSegments splits path into its displayable segments, preserving
+// drive letters on Windows (e.g. "C:\" → ["C:"]). Separators are consumed
+// and not included in any segment.
+func splitPathSegments(path string) []string {
+	// Handle Windows drive letter: "C:\foo\bar" → segments ["C:", "foo", "bar"]
+	// Handle Unix: "/foo/bar" → segments ["foo", "bar"] (root "" is skipped)
+	var segs []string
+	var buf strings.Builder
+	i := 0
+	for i < len(path) {
+		// Consume separator(s).
+		for i < len(path) && (path[i] == '\\' || path[i] == '/') {
+			i++
+		}
+		if i >= len(path) {
+			break
+		}
+		// Check for Windows drive letter: single letter followed by colon.
+		if i+1 < len(path) && path[i+1] == ':' {
+			buf.WriteByte(path[i])
+			buf.WriteByte(path[i+1])
+			segs = append(segs, buf.String())
+			buf.Reset()
+			i += 2
+			continue
+		}
+		// Read until next separator.
+		buf.Reset()
+		for i < len(path) && path[i] != '\\' && path[i] != '/' {
+			buf.WriteByte(path[i])
+			i++
+		}
+		if s := buf.String(); s != "" {
+			segs = append(segs, s)
+		}
+	}
+	return segs
+}
+
+// pathPrefixAtSegment returns the directory path up to and including segment
+// segIdx (0-based). For example, given "C:\Users\chenwei\Documents" and
+// segIdx=2 ("chenwei"), returns "C:\Users\chenwei". Returns "" if segIdx is
+// out of range.
+//
+// For Windows root paths like "E:\" where segIdx=0 (the drive letter segment),
+// returns "E:\" (not "E:") so the returned path is a valid directory root that
+// newTabAt can load without error. The trailing separator is appended because
+// filepath.Base("E:\") == "\" on Windows, and a bare "E:" is not a usable path.
+func pathPrefixAtSegment(rawPath string, segIdx int) string {
+	raw := strings.TrimRight(rawPath, `\ /`)
+	segs := splitPathSegments(raw)
+	if segIdx < 0 || len(segs) <= segIdx {
+		return ""
+	}
+	var out strings.Builder
+	segCount := 0
+	i := 0
+	for i < len(raw) {
+		// Drive letter at start: "C:" (Windows absolute path).
+		if segCount == 0 && raw[i] != '/' && i+1 < len(raw) && raw[i+1] == ':' {
+			out.WriteByte(raw[i])
+			out.WriteByte(raw[i+1])
+			segCount++
+			i += 2
+			if segCount-1 == segIdx {
+				// Root drive: preserve trailing separator so the result is a
+				// valid directory path (e.g. "E:\" not "E:"). Without it,
+				// filepath.Base("E:") == "E:" and newTabAt treats it as a
+				// relative path instead of a drive root.
+				if len(segs) == 1 {
+					out.WriteByte('\\')
+				}
+				return out.String()
+			}
+			continue
+		}
+		// Leading "/" on a Unix absolute path: emit it before the first segment.
+		if i == 0 && raw[i] == '/' {
+			out.WriteByte('/')
+			i++
+			continue
+		}
+		// Emit separator chars. For Windows paths the "\" before a drive letter
+		// is already handled above and must not be re-emitted here.
+		if raw[i] == '\\' || raw[i] == '/' {
+			if segCount > 0 || i > 0 {
+				out.WriteByte(raw[i])
+			}
+			i++
+			continue
+		}
+		// Read segment name until next separator.
+		start := i
+		for i < len(raw) && raw[i] != '\\' && raw[i] != '/' {
+			i++
+		}
+		segCount++
+		out.WriteString(raw[start:i])
+		if segCount-1 == segIdx {
+			return out.String()
+		}
+	}
+	return ""
 }
