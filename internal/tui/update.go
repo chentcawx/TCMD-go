@@ -304,48 +304,28 @@ func (m *model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case ":":
 		m.beginCommand()
 	case "?":
-		m.status = "Tab切换 · ↑↓移动 · Enter进入/打开 · Backspace上级 · Space选择 · Ctrl+A全选 · F2批量重命名 · Alt+F7命令行(复制路径) · F3查看 · F4编辑(可绑定) · F5复制 · F6移动 · F7新建 · F8删除 · F11移动+链接 · Ctrl+E/:assoc 扩展名关联应用 · Ctrl+T新标签 · Ctrl+W关标签 · :命令 · Esc取消"
+		m.status = "Tab切换 · ↑↓移动 · Enter进入/打开 · Backspace上级 · Space选择 · Ctrl+A全选 · F2批量重命名 · Alt+F7命令行(复制路径) · F3查看 · F4编辑(可绑定) · F5复制 · F6移动 · F7新建 · F8删除 · F11移动+链接 · Ctrl+E/:assoc 扩展名关联应用 · Ctrl+T新标签 · Ctrl+W关标签 · Alt+1/2/3 排序 · Alt+R 反转 · :命令 · Esc取消"
 	}
-	// Sort hotkeys: ctrl+1/2/3 select sort field (name/date/size); alt+r toggles asc/desc.
+	// Sort hotkeys: alt+1/2/3 select sort field (name/date/size).
 	// These are checked AFTER the switch so they don't interfere with the
 	// character-key dispatch above.
 	//
-	// Terminal behavior varies:
-	//   - Windows Terminal / ConPTY: ctrl+digit arrives as KeyRunes with
-	//     control-byte rune (0x11..=ctrl+1) or plain digit ('1'..'3').
-	//   - Native conhost via bubbletea key_windows.go: ctrl+a/b/c maps to
-	//     KeyCtrlA/B/C. ctrl+1/2/3 however is NOT a named KeyCtrl* constant,
-	//     so it arrives as KeyRunes{'1'/'2'/'3'} (the digit character).
-	//
-	// We match both forms. Note: we do NOT match KeyCtrlC here because
-	// KeyCtrlC is handled at the top of handleNormalKey as quit; matching it
-	// for sort would be unreachable and confusing. ctrl+3 sort is covered by
-	// the KeyRunes{'3'} branch above.
-	isCtrlSort := (msg.Type == tea.KeyRunes && !msg.Alt && len(msg.Runes) == 1) ||
-		(msg.Type == tea.KeyCtrlA || msg.Type == tea.KeyCtrlB)
-	if isCtrlSort {
-		r := byte(0)
-		if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
-			r = byte(msg.Runes[0])
-		} else if msg.Type == tea.KeyCtrlA {
-			r = '1'
-		} else if msg.Type == tea.KeyCtrlB {
-			r = '2'
-		}
-		switch r {
-		case '1': // ctrl+1 → name sort
+	// Alt+key combination arrives as KeyRunes with Alt:true flag.
+	if msg.Type == tea.KeyRunes && msg.Alt && len(msg.Runes) == 1 {
+		switch msg.Runes[0] {
+		case '1': // alt+1 → name sort
 			m.curTab().sortField = SortByName
 			m.curTab().applyCurrentSort()
 			m.curTab().cursor = 0
 			m.curTab().offset = 0
 			m.status = sortFieldLabel(SortByName) + " 正序"
-		case '2': // ctrl+2 → date sort
+		case '2': // alt+2 → date sort
 			m.curTab().sortField = SortByModTime
 			m.curTab().applyCurrentSort()
 			m.curTab().cursor = 0
 			m.curTab().offset = 0
 			m.status = sortFieldLabel(SortByModTime) + " 正序"
-		case '3': // ctrl+3 → size sort
+		case '3': // alt+3 → size sort
 			m.curTab().sortField = SortBySize
 			m.curTab().applyCurrentSort()
 			m.curTab().cursor = 0

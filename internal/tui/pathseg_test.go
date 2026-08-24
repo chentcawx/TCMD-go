@@ -28,6 +28,9 @@ func TestSplitPathSegments(t *testing.T) {
 	}
 }
 
+// pathPrefixAtSegment must always return a canonical 4-char Windows root
+// ("X:\") when segIdx=0 and the path has only one segment. This prevents
+// legacy malformed variants like "E:" or "E:." from leaking into the UI.
 func TestPathPrefixAtSegment(t *testing.T) {
 	cases := []struct {
 		path   string
@@ -41,7 +44,10 @@ func TestPathPrefixAtSegment(t *testing.T) {
 		{`/home/user/docs`, 0, `/home`},
 		{`/home/user/docs`, 1, `/home/user`},
 		{`/home/user/docs`, 2, `/home/user/docs`},
+		// Windows drive root must be canonical "X:\" (4 chars).
 		{`C:\`, 0, `C:\`},
+		{`D:\`, 0, `D:\`},
+		{`E:\`, 0, `E:\`},
 		{`C:\Windows`, 1, `C:\Windows`},
 		{`C:\Users\chenwei\Documents`, 5, ``}, // out of range
 	}
@@ -49,6 +55,21 @@ func TestPathPrefixAtSegment(t *testing.T) {
 		got := pathPrefixAtSegment(c.path, c.segIdx)
 		if got != c.expect {
 			t.Fatalf("pathPrefixAtSegment(%q, %d) = %q, want %q", c.path, c.segIdx, got, c.expect)
+		}
+	}
+}
+
+// TestPathPrefixAtSegmentRootIsCanonical verifies that double-click on the
+// drive letter segment of a root path always yields the canonical form "X:\"
+// (3 chars), not a malformed variant like "E:" or "E:.".
+func TestPathPrefixAtSegmentRootIsCanonical(t *testing.T) {
+	for _, drive := range []string{"C:\\", "D:\\", "E:\\"} {
+		got := pathPrefixAtSegment(drive, 0)
+		if len(got) != 3 {
+			t.Fatalf("pathPrefixAtSegment(%q, 0) = %q (len=%d), want 3 chars", drive, got, len(got))
+		}
+		if got != drive {
+			t.Fatalf("pathPrefixAtSegment(%q, 0) = %q, want %q", drive, got, drive)
 		}
 	}
 }

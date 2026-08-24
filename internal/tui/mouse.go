@@ -719,10 +719,10 @@ func splitPathSegments(path string) []string {
 // segIdx=2 ("chenwei"), returns "C:\Users\chenwei". Returns "" if segIdx is
 // out of range.
 //
-// For Windows root paths like "E:\" where segIdx=0 (the drive letter segment),
-// returns "E:\" (not "E:") so the returned path is a valid directory root that
-// newTabAt can load without error. The trailing separator is appended because
-// filepath.Base("E:\") == "\" on Windows, and a bare "E:" is not a usable path.
+// On Windows, drive-root paths like "E:\" are always returned in canonical
+// 4-character form: "X:\" (single-letter drive + colon + backslash). This
+// prevents legacy malformed variants like "E:" or "E:." from leaking into the
+// UI via double-click navigation.
 func pathPrefixAtSegment(rawPath string, segIdx int) string {
 	raw := strings.TrimRight(rawPath, `\ /`)
 	segs := splitPathSegments(raw)
@@ -740,10 +740,7 @@ func pathPrefixAtSegment(rawPath string, segIdx int) string {
 			segCount++
 			i += 2
 			if segCount-1 == segIdx {
-				// Root drive: preserve trailing separator so the result is a
-				// valid directory path (e.g. "E:\" not "E:"). Without it,
-				// filepath.Base("E:") == "E:" and newTabAt treats it as a
-				// relative path instead of a drive root.
+				// Windows drive root: always emit canonical "X:\" (4 chars).
 				if len(segs) == 1 {
 					out.WriteByte('\\')
 				}
