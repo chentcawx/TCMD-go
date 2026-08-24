@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mattn/go-runewidth"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // TestTabsCannotCrossPane verifies each pane's tab labels never exceed their
@@ -43,13 +43,13 @@ func TestTabsCannotCrossPane(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := &model{panes: tt.panes, active: 0, width: tt.w, height: 30}
-			sepW := 1 // "│" is width-1 for runewidth
-			leftW := (tt.w - sepW) / 2
+		m := &model{panes: tt.panes, active: 0, width: tt.w, height: 30}
+		sepW := lipgloss.Width("│") // must match View()'s separator ruler
+		leftW := (tt.w - sepW) / 2
 			rightW := tt.w - leftW - sepW
 			for pi, p := range tt.panes {
 				out := m.renderTabs(p, pi == m.active, leftW)
-				gotW := runewidth.StringWidth(out)
+				gotW := lipgloss.Width(out)
 				wantW := leftW
 				if pi == 1 {
 					wantW = rightW
@@ -81,13 +81,13 @@ func TestTabsAlwaysTruncated(t *testing.T) {
 	// Pane 0 has two labels; together they should still fit within leftW,
 	// but if truncateDW ever stops truncating, this test will fail.
 	out0 := m.renderTabs(m.panes[0], true, leftW)
-	if runewidth.StringWidth(out0) > leftW {
-		t.Fatalf("pane 0 tabs overflow: got %d > %d: %q", runewidth.StringWidth(out0), leftW, out0)
+	if lipgloss.Width(out0) > leftW {
+		t.Fatalf("pane 0 tabs overflow: got %d > %d: %q", lipgloss.Width(out0), leftW, out0)
 	}
 	// Pane 1 has one short label; it must not grow past rightW.
 	out1 := m.renderTabs(m.panes[1], false, rightW)
-	if runewidth.StringWidth(out1) > rightW {
-		t.Fatalf("pane 1 tabs overflow: got %d > %d: %q", runewidth.StringWidth(out1), rightW, out1)
+	if lipgloss.Width(out1) > rightW {
+		t.Fatalf("pane 1 tabs overflow: got %d > %d: %q", lipgloss.Width(out1), rightW, out1)
 	}
 	// Empty panes produce empty tab lines (no ghost space).
 	empty := &pane{}
