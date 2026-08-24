@@ -272,22 +272,18 @@ func (m *model) handleDoubleClick(x, y int) {
 	if m.active != p {
 		m.active = p
 	}
-	tb := m.panes[p]
-	// Path bar: navigate to the segment under the cursor.
+	// Path bar double-click: reuse upDir() logic (same as Backspace key) to
+	// navigate up one level. This ensures identical behavior and avoids
+	// duplicating path-prefix / newTabAt / clearQuickType / saveConfig plumbing.
 	if y == rowPath {
-		if segIdx := pathSegmentAt(tb.current().path, x); segIdx >= 0 {
-			target := pathPrefixAtSegment(tb.current().path, segIdx)
-			if target != "" && target != tb.current().path {
-				tb.tabs[tb.active] = newTabAt(target, filepath.Base(tb.current().path))
-				m.saveConfig()
-			}
-		}
+		m.upDir()
 		return
 	}
 	idx := m.mouseListRow(p, y)
 	if idx < 0 {
 		return
 	}
+	tb := m.panes[p]
 	tb.current().cursor = idx
 	m.ensureCursorVisible(tb.current())
 	m.openOrEnterCurrent()
