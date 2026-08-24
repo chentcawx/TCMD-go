@@ -2,12 +2,25 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/mattn/go-runewidth"
 	"tcmd/internal/fs"
 )
+
+// dumpFirstLines renders the first n lines (or fewer) for failure messages.
+func dumpFirstLines(lines []string, n int) string {
+	if n > len(lines) {
+		n = len(lines)
+	}
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		b.WriteString(fmt.Sprintf("[%d] %s\n", i, lines[i]))
+	}
+	return b.String()
+}
 
 func stripANSI(s string) string {
 	var b strings.Builder
@@ -165,11 +178,13 @@ func TestSeparatorWidthCountsInLayout(t *testing.T) {
 // TestViewNeverExceedsHeight is the regression test for the non-maximized
 // window bug: in a non-maximized Windows Terminal, the reported height can
 // be 1-2 rows larger than the usable content area. If the View() output
-// exceeds that usable area, the terminal scrolls and pushes the tab bar
-// off-screen, shifting every subsequent row. This test asserts the View()
-// output stays at or below the reported height for every realistic size.
+// reaches that reported height, the terminal scrolls and pushes the tab bar
+// off-screen. We therefore reserve one trailing slack row: View() MUST emit
+// at most h-1 rows. This assertion is what actually catches the regression
+// (a naive layout emitting exactly h rows would pass a `lines <= h` check but
+// still scroll the tab bar away in a real non-maximized window).
 func TestViewNeverExceedsHeight(t *testing.T) {
-	for _, h := range []int{20, 24, 25, 30, 40, 50} {
+	for _, h := range []int{12, 20, 24, 25, 30, 40, 50} {
 		m := InitialModel()
 		m.width = 120
 		m.height = h
@@ -177,8 +192,36 @@ func TestViewNeverExceedsHeight(t *testing.T) {
 		m.panes[1].current().entries = fakeEntries("RIGHT", 100)
 		out := stripANSI(m.View())
 		lines := strings.Count(out, "\n") + 1
-		if lines > h {
-			t.Fatalf("height=%d: View() produced %d lines (must be <= h)", h, lines)
+		if lines > h-1 {
+			t.Fatalf("height=%d: View() produced %d lines (must be <= h-1 to leave ConPTY slack)", h, lines)
 		}
+	}
+}
+
+// TestTabBarOnRowZero locks in the non-maximized "tab bar disappears" fix:
+// the tab bar (the base name of the current tab's path) must be the very
+// first row of the rendered output, regardless of terminal size. If the
+// layout ever emits more rows than the real drawable area, the terminal
+// scrolls and row 0 — the tab bar — leaves the visible viewport.
+func TestTabBarOnRowZero(t *testing.T) {
+	m := InitialModel()
+	m.width = 120
+	m.height = 24
+	m.panes[0].current().entries = cjkEntries("左", 50)
+	m.panes[1].current().entries = fakeEntries("RIGHT", 50)
+	out := stripANSI(m.View())
+	lines := strings.Split(out, "\n")
+	if len(lines) == 0 {
+		t.Fatal("View() produced no output")
+	}
+	// The first row of each pane is the tab label for its current tab.
+	leftTab := filepath.Base(m.panes[0].current().path)
+	rightTab := filepath.Base(m.panes[1].current().path)
+	if !strings.Contains(lines[0], leftTab) {
+		t.Fatalf("row 0 missing left tab %q:\n%s", leftTab, dumpFirstLines(lines, 3))
+	}
+	// The right tab sits on the same row 0, after the separator.
+	if !strings.Contains(lines[0], rightTab) {
+		t.Fatalf("row 0 missing right tab %q:\n%s", rightTab, dumpFirstLines(lines, 3))
 	}
 }

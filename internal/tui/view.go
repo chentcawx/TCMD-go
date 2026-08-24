@@ -55,6 +55,25 @@ func (m *model) View() string {
 	if h < 10 {
 		h = 10
 	}
+	// Reserve one trailing blank row of slack below the bottom status bar.
+	//
+	// Why: ConPTY / Windows Terminal report a content height 1-2 rows LARGER
+	// than the real drawable area when the window is NOT maximized (the shell
+	// reports the full outer size including its border/padding). If View()
+	// emits exactly h rows, the extra rows overflow the real drawable area;
+	// the terminal scrolls and pushes row 0 — the tab bar — out of the visible
+	// viewport, so the tab bar "disappears" in non-maximized windows only.
+	// Emitting h-1 rows keeps the tab bar pinned at row 0 regardless of that
+	// reporting gap. (Maximized windows report accurately, which is why the
+	// bug only surfaces when un-maximized.)
+	//
+	// Layout budget (rows): paneH = h-2 (tab + path + list, right-padded) + 1
+	// bottom status row = h-1 total emitted rows. The remaining 1 row is the
+	// slack that absorbs the ConPTY over-report.
+	paneH := h - 2
+	if paneH < 3 {
+		paneH = 3
+	}
 	// The vertical separator is a box-drawing glyph whose display width is
 	// not always 1: runewidth reports it as width 2 on terminals that treat
 	// ambiguous-width characters as full-width (common on CJK-locale Windows).
@@ -67,8 +86,8 @@ func (m *model) View() string {
 		sepW = 1
 	}
 	half := (w - sepW) / 2
-	left := m.renderPane(m.panes[0], m.active == 0, half)
-	right := m.renderPane(m.panes[1], m.active == 1, w-half-sepW)
+	left := m.renderPane(m.panes[0], m.active == 0, half, paneH)
+	right := m.renderPane(m.panes[1], m.active == 1, w-half-sepW, paneH)
 	panes := lipgloss.JoinHorizontal(lipgloss.Top, left, sep, right)
 	bottom := m.renderBottom(w)
 	return clampRowWidth(lipgloss.JoinVertical(lipgloss.Left, panes, bottom), w)
@@ -101,7 +120,7 @@ func clampRowWidth(s string, max int) string {
 	return strings.Join(lines, "\n")
 }
 
-func (m *model) renderPane(p *pane, active bool, w int) string {
+func (m *model) renderPane(p *pane, active bool, w, paneH int) string {
 	// Pad the tab and path rows to the full pane width so every row in the
 	// pane block is exactly w cells wide. Without this, a short path/tab row
 	// would let the vertical separator drift to a different column on that
@@ -115,12 +134,14 @@ func (m *model) renderPane(p *pane, active bool, w int) string {
 	} else {
 		pathStr = pathStyle.Render(pathRaw)
 	}
-	// panes area = m.height - 1 row reserved for the status/bottom bar.
-	// Without this fixed height the panes would shrink to whatever the
-	// entries list happens to render (often 3-4 lines when a tab is still
-	// loading), which then leaves a big blank gap before the bottom row
-	// and the separator never reaches the bottom edge of the window.
-	paneHeight := m.height - 1
+	// paneH is the height of the pane block (tab + path + list), passed by
+	// View() as h-2 so the overall View() output is h-1 rows — the trailing
+	// row of slack absorbs ConPTY's non-maximized height over-report and keeps
+	// the tab bar (row 0) on screen. Without a fixed height the panes would
+	// shrink to whatever the entries list happens to render (often 3-4 lines
+	// when a tab is still loading), leaving a blank gap and letting the
+	// separator fall short of the bottom edge.
+	paneHeight := paneH
 	if paneHeight < 3 {
 		paneHeight = 3
 	}
@@ -166,16 +187,13 @@ func (m *model) renderTabs(p *pane, active bool, w int) string {
 }
 
 func (m *model) renderList(t *tab, w, h int, active bool) string {
-	// h is the height of the *list area only* — the caller has already
-	// accounted for the tab row and the path row (2 fixed lines that live
-	// outside this function). We subtract 1 more from h as slack to absorb
-	// the 1-row status/bottom row, and non-perfect terminal height
-	// reporting (ConPTY reports a content area 1-2 rows larger than the
-	// visible drawable when the window isn't maximized — a real issue
-	// we've shipped fixes for before). The slack is invisible on a clean
-	// terminal (just one trailing blank row) and prevents the tab bar
-	// from being pushed off-screen on the slightly-off sizes.
-	visible := h - 1
+	// h is the height of the whole *pane block* (tab + path + list rows),
+	// passed by renderPane as paneH. The tab row and path row consume 2
+	// fixed lines that live above this function, so the scrollable list
+	// area is h-2 rows. The 1-row bottom/status slack is owned by View()
+	// (it emits h-1 total rows, reserving the last row as ConPTY-height
+	// over-report slack), NOT here.
+	visible := h - 2
 	if visible < 1 {
 		visible = 1
 	}

@@ -68,7 +68,12 @@ func (m *model) mouseListRow(p int, y int) int {
 		return -1
 	}
 	t := m.panes[p].current()
-	visible := m.height - 5
+	// The pane block occupies m.height-1 rows (tab + path + list); the tab
+	// and path rows consume 2 fixed lines, leaving m.height-3 scrollable
+	// list rows. This must stay in lock-step with renderPane/renderList; the
+	// extra 1-row slack at the very bottom (emitted as h-1 total rows) is the
+	// ConPTY non-maximized height over-report buffer and is not clickable.
+	visible := m.height - 3
 	if visible < 1 {
 		visible = 1
 	}
@@ -215,9 +220,10 @@ func (m *model) openOrEnterCurrent() {
 }
 
 // ensureCursorVisible re-derives the scroll offset so the cursor stays in view,
-// mirroring renderList's clamping.
+// mirroring renderList's clamping. visible must equal the list area height
+// (m.height-3: pane block m.height-1 minus the 2 fixed tab/path rows).
 func (m *model) ensureCursorVisible(t *tab) {
-	visible := m.height - 5
+	visible := m.height - 3
 	if visible < 1 {
 		visible = 1
 	}

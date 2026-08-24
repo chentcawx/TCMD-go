@@ -5,3 +5,7 @@ _debug/
 # Build helper files.
 tcmd.exe
 TCMD-go.7z
+# Runtime config persisted by the app (user paths, window size) — local only.
+dist/tcmd.json
+# Runtime diagnostics / screenshots.
+.workbuddy/screenshots/
