@@ -169,30 +169,20 @@ func fmtTree(root *treeDir, maxW int) []string {
 }
 
 func renderNode(t *treeDir, prefix string, lines *[]string, maxW int) {
-	// Choose connector: last child uses └─, others use ├─.
-	conn := "├─ "
-	if len(t.children) == 0 {
-		conn = "└─ "
-	}
 	// Root has no prefix; render its children with proper branching.
 	for i, c := range t.children {
 		isLast := i == len(t.children)-1
-		childPrefix := prefix
-		if prefix == "" {
-			// Root level: no prefix, just the connector.
-			childPrefix = ""
-		} else if isLast {
+		var childPrefix string
+		if isLast {
 			childPrefix = prefix + "    "
 		} else {
 			childPrefix = prefix + "│   "
 		}
-		connector := conn
-		if isLast {
-			connector = "└─ "
-		} else {
+		connector := "└─ "
+		if !isLast {
 			connector = "├─ "
 		}
-		line := connector + dirStyle.Render("📁 "+c.name) +
+		line := prefix + connector + dirStyle.Render("📁 "+c.name) +
 			fmt.Sprintf("  %d 目  %d 文件  %s", c.dirCount, c.fileCount, humanSize(c.size))
 		*lines = append(*lines, truncateDW(line, maxW))
 		renderNode(c, childPrefix, lines, maxW)
