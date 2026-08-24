@@ -28,6 +28,7 @@ type tab struct {
 	cursor      int                   // index of the highlighted row in entries
 	selected    map[string]bool       // set of selected entry paths
 	offset      int                   // first visible row (scroll position)
+	hOffset     int                   // horizontal scroll offset (column offset for wide filenames)
 	loadErr     error                 // non-nil when the last reload failed
 	loading     bool                  // true while async reload is in progress
 	loadingMsg  string                // status message shown during loading
@@ -346,6 +347,7 @@ type model struct {
 	treeRoot     *treeDir
 	treeFlat     []*treeDir // pre-order list of visible nodes (excludes root summary), indexed by treeCursor
 	treeCursor   int
+	treeScroll   int // vertical scroll offset for tree overlay (rows above the viewport)
 	treePath     string
 	treeHistory  []string // parent paths, top = closest ancestor
 	treeLoading  bool     // true while async stat is in flight

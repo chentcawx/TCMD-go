@@ -90,6 +90,8 @@ func (m *model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	switch m.ov {
 	case overlayContextMenu:
 		return m.handleContextMenuMouse(msg)
+	case overlayDrivePicker:
+		return m.handleDrivePickerMouse(msg)
 	case overlayNone:
 		// fall through to normal pane interaction
 	default:
@@ -126,6 +128,40 @@ func (m *model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.openContextMenu(msg.X, msg.Y)
+	}
+	return m, nil
+}
+
+// handleDrivePickerMouse handles mouse events for the drive-letter picker overlay.
+// Wheel up/down moves the selection index; left click selects the drive at the
+// clicked row.
+func (m *model) handleDrivePickerMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		if m.pickerIndex > 0 {
+			m.pickerIndex--
+		}
+	case tea.MouseButtonWheelDown:
+		if m.pickerIndex < len(m.drives)-1 {
+			m.pickerIndex++
+		}
+	case tea.MouseButtonLeft:
+		if msg.Action != tea.MouseActionPress {
+			return m, nil
+		}
+		// Map Y coordinate to drive index. The picker is centered in the
+		// terminal via centerBox: with h=24 and ~15 rendered lines (border +
+		// padding + content), padTop = (24-15)/2 = 4, so the first drive item
+		// lands at row 4+6 = 10 (after top border + padding row + title + blank
+		// line). clickedIdx = Y - 10 maps correctly. We clamp to [0, len(drives)).
+		clickedIdx := msg.Y - 10
+		if clickedIdx < 0 {
+			clickedIdx = 0
+		}
+		if clickedIdx >= len(m.drives) {
+			clickedIdx = len(m.drives) - 1
+		}
+		m.pickerIndex = clickedIdx
 	}
 	return m, nil
 }
@@ -640,6 +676,13 @@ func (m *model) renderContextMenu() string {
 
 func maxInt(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func minInt(a, b int) int {
+	if a < b {
 		return a
 	}
 	return b

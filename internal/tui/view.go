@@ -22,6 +22,8 @@ var (
 	titleStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63"))
 	borderStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	activePathStyle = lipgloss.NewStyle().Reverse(true)
+	scrollThumbStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("229")).Bold(true) // light yellow
+	scrollTrackStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("238"))          // dark gray
 )
 
 // View renders either the full dual-pane UI or the active modal overlay.
@@ -231,16 +233,49 @@ func (m *model) renderList(t *tab, w, h int, active bool) string {
 		return b.String()
 	}
 
+	total := len(t.entries)
 	// Render entries (virtual scrolling: only visible rows).
 	end := t.offset + visible
-	if end > len(t.entries) {
-		end = len(t.entries)
+	if end > total {
+		end = total
 	}
 	for i := t.offset; i < end; i++ {
 		b.WriteString(m.formatEntry(t.entries[i], t.selected[t.entries[i].Path], i == t.cursor, active, w))
 		b.WriteString("\n")
 	}
 
+	return b.String()
+}
+
+// renderVScrollbar draws a right-aligned vertical scrollbar in the last 'scrollH'
+// rows of the list area. When offset==0 and total<=scrollH no scrollbar is drawn.
+// The thumb occupies a proportional slice of the available track height.
+func (m *model) renderVScrollbar(scrollH, offset, total int) string {
+	if total <= scrollH || scrollH <= 0 {
+		// No scrollbar needed — fill the remaining rows with blank space aligned
+		// to the pane width (a single space is enough since padRowsToHeight in
+		// renderPane will pad each line to the full pane width).
+		var b strings.Builder
+		for i := 0; i < scrollH; i++ {
+			b.WriteString(" ")
+			b.WriteString("\n")
+		}
+		return b.String()
+	}
+	var b strings.Builder
+	thumbH := maxInt(1, scrollH*scrollH/total)
+	if thumbH > scrollH {
+		thumbH = scrollH
+	}
+	thumbStart := (offset * (scrollH - thumbH)) / (total - scrollH)
+	for row := 0; row < scrollH; row++ {
+		if row >= thumbStart && row < thumbStart+thumbH {
+			b.WriteString(scrollThumbStyle.Render("█"))
+		} else {
+			b.WriteString(scrollTrackStyle.Render("░"))
+		}
+		b.WriteString("\n")
+	}
 	return b.String()
 }
 
@@ -581,12 +616,44 @@ func (m *model) renderTreeView() string {
 			Render(b.String())
 		return centerBox(box, w, h)
 	}
-	// Render tree lines.
-	lines := fmtTree(m.treeRoot, w-6)
-	for _, line := range lines {
-		b.WriteString(line)
-		b.WriteString("\n")
+	// Render tree lines with scroll and cursor highlight.
+	// Available lines for content: h - 2 (title + hint).
+	visibleLines := h - 4
+	if visibleLines < 2 {
+		visibleLines = 2
 	}
+	allLines := fmtTree(m.treeRoot, w-6)
+	totalLines := len(allLines)
+
+	// Clamp scroll offset.
+	if m.treeScroll < 0 {
+		m.treeScroll = 0
+	}
+	maxScroll := maxInt(0, totalLines-visibleLines)
+	if m.treeScroll > maxScroll {
+		m.treeScroll = maxScroll
+	}
+
+	// Determine which line the cursor highlights.
+	// treeCursor indexes into treeFlat (pre-order nodes, excludes root summary).
+	// The first line of allLines is the root summary, so the visual line for
+	// treeCursor is: 1 (summary) + treeCursor + scroll offset.
+	cursorVisualLine := 1 + m.treeScroll + m.treeCursor
+
+	var renderedLines int
+	for i := m.treeScroll; i < totalLines && renderedLines < visibleLines; i++ {
+		line := allLines[i]
+		// Highlight the cursor line.
+		if i == cursorVisualLine {
+			line = cursorStyle.Render(" ▶ " + line)
+		} else {
+			line = "   " + line
+		}
+		b.WriteString(truncateDW(line, w-4))
+		b.WriteString("\n")
+		renderedLines++
+	}
+
 	// Navigation hint.
 	hint := "  ↑↓ 导航  Enter 进入  ← 返回上级  Esc 关闭"
 	if len(m.treeHistory) > 0 {

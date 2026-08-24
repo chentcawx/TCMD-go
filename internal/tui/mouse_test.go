@@ -556,3 +556,58 @@ func itoa(i int) string {
 	}
 	return string(b[pos:])
 }
+
+// TestDrivePickerMouseWheel tests that wheel events move the picker index.
+func TestDrivePickerMouseWheel(t *testing.T) {
+	m := newTestModel()
+	m.width = 80
+	m.height = 24
+	m.drives = []string{"C:\\", "D:\\", "E:\\"}
+	m.pickerIndex = 0
+	m.ov = overlayDrivePicker
+
+	// Wheel down should advance the index.
+	m.handleMouse(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress, X: 40, Y: 10})
+	if m.pickerIndex != 1 {
+		t.Fatalf("wheel down should advance pickerIndex to 1, got %d", m.pickerIndex)
+	}
+
+	// Wheel up should retreat the index.
+	m.handleMouse(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress, X: 40, Y: 10})
+	if m.pickerIndex != 0 {
+		t.Fatalf("wheel up should retreat pickerIndex to 0, got %d", m.pickerIndex)
+	}
+
+	// Wheel down at boundary should stay at max.
+	m.pickerIndex = 2
+	m.handleMouse(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress, X: 40, Y: 10})
+	if m.pickerIndex != 2 {
+		t.Fatalf("wheel down at boundary should stay at 2, got %d", m.pickerIndex)
+	}
+}
+
+// TestDrivePickerMouseClick selects a drive by clicking.
+func TestDrivePickerMouseClick(t *testing.T) {
+	m := newTestModel()
+	m.width = 80
+	m.height = 24
+	m.drives = []string{"C:\\", "D:\\", "E:\\"}
+	m.pickerIndex = 0
+	m.ov = overlayDrivePicker
+
+	// The picker render formula: with h=24, centerBox pads ~15 content lines
+	// to center, yielding padTop=4. Drive items land at rows 10,11,12.
+	// clickedIdx = Y - 10 maps correctly.
+	tests := []struct{ y, wantIdx int }{
+		{10, 0}, // C:\\
+		{11, 1}, // D:\\
+		{12, 2}, // E:\\
+	}
+	for _, tt := range tests {
+		m.pickerIndex = 0
+		m.handleMouse(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 40, Y: tt.y})
+		if m.pickerIndex != tt.wantIdx {
+			t.Fatalf("click at y=%d should select drive %d, got %d", tt.y, tt.wantIdx, m.pickerIndex)
+		}
+	}
+}

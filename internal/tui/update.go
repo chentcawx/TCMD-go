@@ -829,13 +829,59 @@ func (m *model) handleTreeViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyUp, tea.KeyCtrlP:
 		if m.treeCursor > 0 {
 			m.treeCursor--
+			// Keep cursor visible: if scrolling up past the top, scroll with it.
+			if m.treeCursor < m.treeScroll {
+				m.treeScroll = m.treeCursor
+			}
 		}
 	case tea.KeyDown, tea.KeyCtrlN:
 		// treeCursor indexes into treeFlat (pre-order visible nodes). Clamp to
 		// the last entry so a long press at the bottom is a no-op, not OOB.
 		if m.treeCursor < len(m.treeFlat)-1 {
 			m.treeCursor++
+			// Keep cursor visible: if scrolling down past the bottom, scroll with it.
+			visibleLines := m.height - 4
+			if visibleLines < 2 {
+				visibleLines = 2
+			}
+			if m.treeCursor >= m.treeScroll+visibleLines {
+				m.treeScroll = m.treeCursor - visibleLines + 1
+			}
 		}
+	case tea.KeyPgUp:
+		// Page up: move cursor up by one screenful.
+		visibleLines := m.height - 4
+		if visibleLines < 2 {
+			visibleLines = 2
+		}
+		m.treeCursor = maxInt(0, m.treeCursor-visibleLines)
+		if m.treeCursor < m.treeScroll {
+			m.treeScroll = m.treeCursor
+		}
+	case tea.KeyPgDown:
+		// Page down: move cursor down by one screenful.
+		visibleLines := m.height - 4
+		if visibleLines < 2 {
+			visibleLines = 2
+		}
+		m.treeCursor = minInt(len(m.treeFlat)-1, m.treeCursor+visibleLines)
+		if m.treeCursor >= m.treeScroll+visibleLines {
+			m.treeScroll = m.treeCursor - visibleLines + 1
+		}
+	case tea.KeyHome:
+		m.treeCursor = 0
+		m.treeScroll = 0
+	case tea.KeyEnd:
+		m.treeCursor = len(m.treeFlat) - 1
+		visibleLines := m.height - 4
+		if visibleLines < 2 {
+			visibleLines = 2
+		}
+		maxScroll := maxInt(0, len(m.treeFlat)-visibleLines)
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		m.treeScroll = maxScroll
 	case tea.KeyEnter:
 		// Enter descends into the directory under the cursor. The current path
 		// is pushed onto the history stack so ←/Backspace can return to it.
