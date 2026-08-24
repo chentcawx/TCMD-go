@@ -1,15 +1,7 @@
-# WorkBuddy internal project data (memory, logs, skills)
-.workbuddy/
-
-# Packed archives
-*.7z
-*.zip
-*.tar.gz
-
-# Stray build artifacts at repo root (use dist/ instead)
-/tcmd.exe
-/tcmd64.exe
-/tcmd386.exe
-
-# Temp files
-*.tmp
+# Windows reserved device name — generated accidentally by some shells.
+nul
+# Temporary test/diagnostic programs.
+_debug/
+# Build helper files.
+tcmd.exe
+TCMD-go.7z

@@ -1,0 +1,57 @@
+# TCMD-go 项目记忆
+
+## 项目定位
+- **名称**：TCMD = TUI Command。纯 Go 实现的 Total Commander 风格**双窗口多标签**文件管理器。
+- **目标平台**：Windows 32 位（GOARCH=386）与 64 位（GOARCH=amd64）。绿色免安装 exe，无外部依赖。
+- **硬约束**：避免使用任何 web 控件（不用 WebView2 / Wails / Electron），节约系统资源；纯原生终端 TUI 渲染。
+
+## 架构决策（2026-08-23 经用户确认）
+- **渲染后端**：`bubbletea`（终端 TUI）。理由：最贴合“TUI Command”命名、最省资源、天然零 web、纯 Go 32/64 位编译无 CGO。
+- **备选评估**：
+  - Walk（原生 Win32 GUI）—— 最像 TC 桌面体验但仅 Windows；
+  - Gio（跨平台即时模式 GUI）—— 依赖 OpenGL，远程桌面/虚拟机易白屏（mediadown-go 已踩坑）。
+  - 两者均未被选。
+- **模块结构**：
+  - `internal/fs`：跨平台文件操作（列举/复制/移动/删除/新建/隐藏属性）。Windows 隐藏属性用 `golang.org/x/sys/windows` 的 `GetFileAttributes` + `UTF16PtrFromString`。
+  - `internal/tui`：bubbletea model/view/update/ops。`model.go`（状态机）/ `update.go`（键位+操作触发）/ `view.go`（渲染）/ `ops.go`（文件操作纯函数）。
+  - `cmd/tcmd/main.go`：入口，`tea.NewProgram(m, tea.WithAltScreen())`。
+
+## 键位（TC 风格）
+Tab 切面板 · ↑↓/jk 移动 · Enter 进入 · Backspace 上级 · Space/Insert 选择 · Ctrl+A 全选 · Ctrl+R 刷新 · **Alt+←/→ 切标签** · Ctrl+T 新标签 · Ctrl+W 关标签 · F3 查看 · F4 编辑/关联打开 · F5 复制 · F6 移动 · F7 新建 · F8/Del 删除 · `:` 命令行 · `?` 帮助 · Esc 取消 / Q 退出 · **Ctrl+E 打开关联编辑器** · **:assoc 命令打开关联编辑器（终端无关兜底）**。
+
+## 关键约定（2026-08-23 固化）
+- **构建产物统一在 `dist/`**：`go build -o dist/tcmd64.exe ./cmd/tcmd`（不要建到根目录）。
+- **Ctrl+E 在部分终端不可靠**（Windows Terminal / ConPTY 吞键）：`case tea.KeyCtrlE` 的 `handleNormalKey` 分支是终端相关入口；`case "assoc"` 的 `beginCommand` 分支是终端无关兜底。
+- **跨平台文件操作**：`internal/fs/fs.go` 是跨平台接口；平台特定实现在 `fs_windows.go` / `fs_unix.go` 按 `//go:build` 文件级拆分（不要在 `.go` 文件内用行级 build tag 混合平台代码）。
+- **异步队列广播**：快照在锁内拷贝再 unlock，避免 view 看到中间态。
+- **CJK 输入**：光标按 rune 维度移动（`terminal_helpers.go`），不要用 byte/string 索引。
+
+## MVP 范围（首版已实现）
+双窗口 + 每面板多标签 + 文件列表（目录优先排序）+ 键盘导航/选择 + 复制/移动/删除/新建目录/查看（内置只读 viewer）+ 命令行（目录跳转或 shell 执行）+ 确认/输入对话框。
+
+## 后续迭代清单（未实现，按优先级）
+1. FTP / 网络邻居
+2. 压缩包浏览（zip/7z/rar）
+3. 同步目录、比较文件
+4. 批量重命名（正则/计数器）
+5. 内置编辑器（F4，当前仅提示后续）
+6. 快速搜索（quick search）/ 增量筛选
+7. 文件关联打开、自定义列、排序规则切换
+8. 配置持久化（ini/json：列宽、默认目录、键位）
+9. 中文 IME 输入（当前命令行/输入框仅 ASCII，CJK 需 IME 支持）
+10. 后台任务 + 进度条（当前复制/删除同步执行，大文件会短暂卡 UI）
+11. 目录大小递归计算（状态栏当前仅统计文件）
+
+## 构建 / 验证
+- 64 位：`go build -o dist/tcmd64.exe ./cmd/tcmd`
+- 32 位：`GOARCH=386 go build -o dist/tcmd386.exe ./cmd/tcmd`
+- 测试：`go test ./internal/fs`
+- 绿色分发：直接拷贝 exe 即可，无 DLL/运行时依赖（纯 Go）。
+
+## 已知坑 / 约束
+- bubbletea v1.3.10 **无** `KeyCtrlTab` / `KeyQ` 常量（标签切换改用 Alt+←/→；viewer 退出用 `msg.String()=="q"`）。
+- `windows.GetFileAttributes` 必须传 `*uint16`（UTF-16），不能直接传 Go string。
+- 终端 TUI 下中文目录名输入受 IME 限制（MVP 命令行仅 ASCII 路径）。
+- **ANSI 宽度计数：必须用 `lipgloss.Width(s)`，**绝不能用 `runewidth.StringWidth(s)`**——后者把 ESC/`[`/`;`/digits 都按可见字符算，会误判 truncate 触发条件并偷吃掉 trailing reset，后续行继承打开的 SGR 样式（典型现象：左侧高亮 tab 截断后整个右 panel 跟着染色）。`view.go` 的 `truncateDW` 已经改成 ANSI-aware：CSI 整块保留 + `hasOpenSGR` 检测 + 自动闭合 `\x1b[0m`。
+- **View() 末端防御：clampRowWidth(view, m.width)** 用 `lipgloss.Width` 兜底每行可见宽度 ≤ m.width，防止 ConPTY 在非最大化 Windows Terminal 下报的 width 与终端真实 drawable 宽度有微小偏差时整行超出触发 wrap 出现“右标签覆盖左标签”的伪串行效果。
+- 测试矩阵：用 `go test -v -run 'TestTruncateDW|TestClampRowWidth|TestViewRowsStayWithinWidth' ./internal/tui/` 覆盖截断 + clamp + 完整 View 路径。

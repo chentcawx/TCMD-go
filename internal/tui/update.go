@@ -8,70 +8,153 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbletea"
 )
 
-// Init is required by tea.Model; tcmd uses it to kick off initial directory
-// loading and ensure the event loop runs even when no resize event arrives.
+// Init kicks off the async-reload watch loop and primes the bubbletea
+// event loop so the very first paint always has a valid (width, height) —
+// even on terminals that, for whatever reason, never deliver their own
+// initial WindowSizeMsg.
+//
+// Why a continuous tick and not just one:
+//   - bubbletea ONLY drives Update in response to messages on its msgs
+//     channel. The async-reload goroutine posts results to t._reloadCh,
+//     NOT to that channel.
+//   - Without an active timer, the very first reloadTick could fire BEFORE
+//     fs.ListDir returns (checkReloadResult's select-default hits), and
+//     then nothing in the system would ever drain t._reloadCh again —
+//     every tab would be stuck on "加载中..." forever.
+//   - 50 ms is well below human perception (~20 fps) and the channel is
+//     empty in 99 % of frames, so the cost is negligible.
+//
+// On every reloadTick we also reschedule tickReloadCmd itself, so the
+// loop self-perpetuates until the program exits.
 func (m *model) Init() tea.Cmd {
-	// bubbletea does NOT send an initial WindowSizeMsg on startup — it only
-	// fires when the terminal is actually resized. Without this tick, the
-	// event loop would sit idle until the user resizes the window, and our
-	// checkReloadResult() would never run, leaving every tab stuck on
-	// "加载中..." forever.
-	return tickReloadCmd
+	return tickReloadCmd()
 }
 
-// tickReloadCmd fires once after 50ms to prime the reload-checking loop.
-// It's a lightweight bootstrap that ensures async reload results are
-// processed even in terminals that never send WindowSizeMsg at startup.
-func tickReloadCmd() tea.Msg {
-	return reloadTickMsg{}
+// tickReloadCmd is the unit-schedule for our reload watcher: it fires one
+// reloadTickMsg reloadTickInterval from now. The Update loop reschedules
+// it after each tick, so the timer chain self-perpetuates.
+func tickReloadCmd() tea.Cmd {
+	return tea.Tick(reloadTickInterval, func(time.Time) tea.Msg {
+		return reloadTickMsg{}
+	})
 }
 
-// reloadTickMsg is an internal marker message that triggers checkReloadResult
-// on all tabs without requiring a real WindowSizeMsg.
+// reloadTickInterval is how often the watch loop polls for async reload
+// results. 50 ms is plenty fast for a human eye (~20 fps) and keeps CPU
+// idle when nothing is loading.
+const reloadTickInterval = 50 * time.Millisecond
+
+// reloadTickMsg is an internal marker message that triggers
+// drainReloadResults on all tabs and reschedules itself for the next tick.
 type reloadTickMsg struct{}
 
 // Update is the single entry point for all messages.
+//
+// Two invariants matter here:
+//  1. EVERY message path must call drainReloadResults before returning,
+//     otherwise an async reload that lands on t._reloadCh between two
+//     Update calls (the common case: user pressed a key right after the
+//     fs.ListDir goroutine completed) will wait for the next event —
+//     potentially forever. Drain-on-every-message is robust without
+//     having to invent a separate watcher goroutine.
+//  2. reloadTickMsg must reschedule tickReloadCmd so the watch loop is
+//     self-perpetuating. Without the reschedule, the timer fires exactly
+//     once (Init) and the chain dies.
+//
+// handleKey / handleMouse return (Model, Cmd) per the bubbletea idiom,
+// so we have to merge their returned model into `m` (in case a handler
+// swapped the model — none do today, but the indirection is required
+// by the interface) and still drain.
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.drainReloadResults()
 		return m, nil
 	case tea.KeyMsg:
-		return m.handleKey(msg)
+		out, c := m.handleKey(msg)
+		m2 := asModel(out)
+		m2.drainReloadResults()
+		return m2, c
 	case tea.MouseMsg:
-		return m.handleMouse(msg)
+		out, c := m.handleMouse(msg)
+		m2 := asModel(out)
+		m2.drainReloadResults()
+		return m2, c
 	case treeStats:
 		m.treeLoading = false
 		if msg.err != nil {
 			m.ov = overlayNone
 			m.status = "目录读取失败: " + msg.err.Error()
-			return m, nil
+		} else {
+			m.treeRoot = msg.root
+			m.treeFlat = flattenTree(msg.root)
+			m.treeCursor = 0
 		}
-		m.treeRoot = msg.root
-		m.treeFlat = flattenTree(msg.root)
-		m.treeCursor = 0
+		m.drainReloadResults()
 		return m, nil
 	case reloadTickMsg:
-		// Bootstrap tick: prime the reload-checking loop.
-		for _, p := range m.panes {
-			for _, t := range p.tabs {
-				t.checkReloadResult()
-			}
-		}
-		return m, nil
+		// Self-perpetuating tick: drain pending reloads, then reschedule
+		// the next tick so the watch loop never dies.
+		m.drainReloadResults()
+		return m, tickReloadCmd()
 	}
-	// Check for pending async reload results on all tabs.
+	// Catch-all for any future message type — still drain.
+	m.drainReloadResults()
+	return m, cmd
+}
+
+// asModel narrows a bubbletea Model return value back to *model. Every
+// handler in this file returns the *model receiver unchanged, so the type
+// assertion always succeeds today. The helper keeps Update tidy in case a
+// future handler decides to return a different concrete type — Update
+// would still operate on the original m, which keeps the rest of the
+// program (View, persistence) sound.
+func asModel(m tea.Model) *model {
+	if mm, ok := m.(*model); ok {
+		return mm
+	}
+	return m.(*model) // the contract is that bubbletea.Model == *model
+}
+
+// drainReloadResults walks every pane and tab and applies any pending
+// async-reload result sitting on t._reloadCh. It's idempotent (a select
+// with default) and cheap when the channel is empty, so calling it on
+// every Update is safe.
+//
+// Why a method on model and not free-standing: it touches t.entries,
+// t.cursor, t.loading, t.loadErr and t._reloadCh — the inner data race
+// between the goroutine that wrote to t._reloadCh and the goroutine now
+// reading is the reason checkReloadResult uses a buffered (cap 1)
+// channel and non-blocking receive. As long as that contract holds, the
+// model can be shared safely between the bubbletea loop and the reader
+// goroutine.
+//
+// A buffered cap=1 channel has another nice property: a single "miss"
+// (reader too slow to drain within one timer tick) still keeps the next
+// result available — we won't silently drop the load.
+//
+// Test paths build a partial model (e.g. only m.panes[0]), so we nil-guard
+// each level here — better than sprinkling nil checks at every call site.
+func (m *model) drainReloadResults() {
 	for _, p := range m.panes {
+		if p == nil {
+			continue
+		}
 		for _, t := range p.tabs {
+			if t == nil {
+				continue
+			}
 			t.checkReloadResult()
 		}
 	}
-	return m, nil
 }
 
 // UpdateNoReturn is a variant of Update that does not return a new model or Cmd.

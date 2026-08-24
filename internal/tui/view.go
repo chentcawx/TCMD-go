@@ -115,8 +115,37 @@ func (m *model) renderPane(p *pane, active bool, w int) string {
 	} else {
 		pathStr = pathStyle.Render(pathRaw)
 	}
-	list := m.renderList(p.current(), w, m.height, active)
-	return lipgloss.JoinVertical(lipgloss.Left, tabs, pathStr, list)
+	// panes area = m.height - 1 row reserved for the status/bottom bar.
+	// Without this fixed height the panes would shrink to whatever the
+	// entries list happens to render (often 3-4 lines when a tab is still
+	// loading), which then leaves a big blank gap before the bottom row
+	// and the separator never reaches the bottom edge of the window.
+	paneHeight := m.height - 1
+	if paneHeight < 3 {
+		paneHeight = 3
+	}
+	list := m.renderList(p.current(), w, paneHeight, active)
+	joined := lipgloss.JoinVertical(lipgloss.Left, tabs, pathStr, list)
+	// Pad the joined pane block to the full pane height so both panes are
+	// exactly the same size before the bottom status row — that is what
+	// makes the status bar actually sit at the very bottom and not float.
+	return padRowsToHeight(joined, paneHeight, w)
+}
+
+// padRowsToHeight right-pads each existing line in s to width w, then
+// appends blank rows until the total line count reaches h. Used by
+// renderPane to keep both panes exactly the same height so the bottom
+// status row always anchors at row m.height-1.
+func padRowsToHeight(s string, h, w int) string {
+	if h <= 0 {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	blank := strings.Repeat(" ", w)
+	for len(lines) < h {
+		lines = append(lines, blank)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m *model) renderTabs(p *pane, active bool, w int) string {
@@ -137,14 +166,16 @@ func (m *model) renderTabs(p *pane, active bool, w int) string {
 }
 
 func (m *model) renderList(t *tab, w, h int, active bool) string {
-	// Reserve 5 rows instead of 3: tabs(1) + path(1) + bottom(1) = 3 logical,
-	// but non-maximized Windows Terminal windows can report a height 1-2 rows
-	// larger than the usable content area (scrollbar, padding, DPI rounding).
-	// Without this slack the View() output overflows by a row, the terminal
-	// scrolls, and the tab bar (row 0) gets pushed off-screen, shifting every
-	// subsequent row up by one. The extra slack is invisible on a perfect
-	// terminal (just two blank rows at the bottom) and prevents the jitter.
-	visible := h - 5
+	// h is the height of the *list area only* — the caller has already
+	// accounted for the tab row and the path row (2 fixed lines that live
+	// outside this function). We subtract 1 more from h as slack to absorb
+	// the 1-row status/bottom row, and non-perfect terminal height
+	// reporting (ConPTY reports a content area 1-2 rows larger than the
+	// visible drawable when the window isn't maximized — a real issue
+	// we've shipped fixes for before). The slack is invisible on a clean
+	// terminal (just one trailing blank row) and prevents the tab bar
+	// from being pushed off-screen on the slightly-off sizes.
+	visible := h - 1
 	if visible < 1 {
 		visible = 1
 	}
@@ -163,7 +194,6 @@ func (m *model) renderList(t *tab, w, h int, active bool) string {
 
 	// Show loading indicator if still loading.
 	if t.loading {
-		// Simple spinner animation based on time (will update on each frame).
 		b.WriteString(statusStyle.Render("  " + t.loadingMsg))
 		b.WriteString("\n")
 		return b.String()

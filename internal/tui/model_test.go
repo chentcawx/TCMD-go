@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // TestNewTabAtFocusesChild checks that newTabAt positions the cursor on the
@@ -148,4 +150,77 @@ func TestAsyncReloadClampCursor(t *testing.T) {
 	if tabs.cursor != 0 {
 		t.Fatalf("cursor should be clamped to 0, got %d", tabs.cursor)
 	}
+}
+
+// TestUpdateDrainsReloadOnKeyMsg covers the bug class that motivated the
+// drain-on-every-message design: an async reload lands on t._reloadCh RIGHT
+// AFTER a load goroutine completes and BEFORE Update runs again. Before
+// the fix, only the very first reloadTickMsg would ever drain; now any
+// message (here a WindowSizeMsg stand-in via handleKey's caller) MUST
+// drain, otherwise key-driven reloads would still hang.
+func TestUpdateDrainsReloadOnKeyMsg(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := &model{active: 0}
+	m.panes[0] = &pane{tabs: []*tab{newTab(dir)}, active: 0}
+	// Give the goroutine a head start so the result is on the channel by
+	// the time we send a WindowSizeMsg — simulates the user re-sizing the
+	// window right after launching tcmd.
+	time.Sleep(150 * time.Millisecond)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	if m.panes[0].current().loading {
+		t.Fatal("loading flag should be false after a WindowSizeMsg-driven drain")
+	}
+	if len(m.panes[0].current().entries) == 0 {
+		t.Fatal("entries should be populated after the drain")
+	}
+}
+
+// TestReloadTickSelfPerpetuates verifies that processing reloadTickMsg
+// schedules the next tick cmd. If the reschedule is missing the chain
+// dies after one tick — and the async reload that lands >50ms after
+// startup would never be drained.
+func TestReloadTickSelfPerpetuates(t *testing.T) {
+	m := &model{active: 0}
+	_, cmd := m.Update(reloadTickMsg{})
+	if cmd == nil {
+		t.Fatal("reloadTickMsg must reschedule the next tick cmd")
+	}
+	// The rescheduled cmd is itself a Tick — it would block on a timer
+	// for ~50ms before producing another reloadTickMsg. We can't usefully
+	// inspect what it produces synchronously here, but verifying the
+	// non-nil return is enough to lock in the self-perpetuation contract.
+}
+
+// TestReloadTickDrainsPendingReload verifies that processing reloadTickMsg
+// also drains any t._reloadCh that has a result pending — the original
+// purpose of the tick.
+func TestReloadTickDrainsPendingReload(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := &model{active: 0}
+	m.panes[0] = &pane{tabs: []*tab{newTab(dir)}, active: 0}
+	// Give the goroutine a generous head start.
+	time.Sleep(100 * time.Millisecond)
+	m.Update(reloadTickMsg{})
+	if m.panes[0].current().loading {
+		t.Fatal("reloadTickMsg must drain a pending reload — tab is still loading")
+	}
+	if len(m.panes[0].current().entries) == 0 {
+		t.Fatal("entries must be populated after reloadTickMsg")
+	}
+}
+
+// TestDrainHandlesNilPane verifies drainReloadResults tolerates partial
+// models (some panes nil) that the tests build. In production the model is
+// always fully built, but we don't want every test to have to wire both
+// panes.
+func TestDrainHandlesNilPane(t *testing.T) {
+	m := &model{}
+	// panes[0] and panes[1] are nil — drain should not panic.
+	m.drainReloadResults()
 }
