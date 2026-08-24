@@ -51,7 +51,9 @@ Tab 切面板 · ↑↓/jk 移动 · Enter 进入 · Backspace 上级 · Space/I
 ## 测试矩阵
 - 宽度：`TestAmbiguousWidthAlignsColumns`（em dash 文件名行宽 ≤ pane 宽）、`TestTruncateDWUsesRunewidthWidth`（truncateDW 保守尺子）
 - 路径段：`TestSplitPathSegments`、`TestPathPrefixAtSegment`（Windows 盘符 + Unix 绝对路径边界）
+- 进程测试：`TestRunWithFileStartsProcess`、`TestAltF7OpensCmdTerminal`、`TestJunctionIsDir` — 均有 `testing.Short()` 守卫，`go test -short ./...` 时 SKIP 避免弹窗
 - 全量：`go test ./...` 全绿后提交
+- **日常开发推荐**：`go test -short ./...` 静默运行不弹窗口；`go test ./...` 完整验证含进程行为
 
 ## 已知坑 / 约束
 - bubbletea v1.3.10 **无** `KeyCtrlTab` / `KeyQ` 常量（标签切换改用 Alt+←/→；viewer 退出用 `msg.String()=="q"`）。
