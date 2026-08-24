@@ -153,26 +153,27 @@ func (m *model) handleDrivePickerMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		// Compute the Y offset where drive[0] actually appears on screen.
 		//
-		// renderDrivePicker content structure:
-		//   title row   (1)
-		//   blank row   (1)  — from the trailing "\n\n" after title
+		// renderDrivePicker content structure (builder raw lines):
+		//   title row        (1)
+		//   blank row        (1)  — from "\n\n" after title
 		//   N drive rows
-		//   prompt row  (1)  — "  Enter 确认    Esc 取消"
-		// contentLines = 3 + len(m.drives)
+		//   blank row        (1)  — from "\n" before prompt
+		//   prompt row       (1)
+		// builderRawLines = 5 + len(m.drives)
 		//
 		// lipgloss RoundedBorder + Padding(1,3) adds:
-		//   top border  (1), top padding (1), bottom padding (1), bottom border (1)
+		//   top border (1), top padding (1), bottom padding (1), bottom border (1)
 		//   => +4 rows
 		//
-		// boxHeight = contentLines + 4 = len(m.drives) + 7
+		// boxHeight = builderRawLines + 4 = len(m.drives) + 9
 		// centerBox padTop = (m.height - boxHeight) / 2
 		//
-		// Within the lipgloss box, drive[0] starts at row 4:
+		// Within the lipgloss box, drive[0] is at row 4:
 		//   border(0) + padding(1) + title(2) + blank(3) + drive[0](4)
 		//
 		// Therefore global Y of drive[i] = padTop + 4 + i.
-		contentLines := 3 + len(m.drives)
-		boxHeight := contentLines + 4
+		builderRawLines := 5 + len(m.drives)
+		boxHeight := builderRawLines + 4
 		padTop := (m.height - boxHeight) / 2
 		if padTop < 0 {
 			padTop = 0
@@ -185,6 +186,11 @@ func (m *model) handleDrivePickerMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			clickedIdx = len(m.drives) - 1
 		}
 		m.pickerIndex = clickedIdx
+		// Left-click on a drive item: navigate directly and close the picker.
+		if clickedIdx >= 0 && clickedIdx < len(m.drives) {
+			m.switchToDrive(m.drives[clickedIdx])
+			m.closeOverlay()
+		}
 	}
 	return m, nil
 }

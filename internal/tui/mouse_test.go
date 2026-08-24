@@ -587,7 +587,8 @@ func TestDrivePickerMouseWheel(t *testing.T) {
 }
 
 // TestDrivePickerMouseClick selects a drive by clicking at various window
-// heights to verify the offset is computed dynamically, not hardcoded.
+// heights to verify the offset is computed dynamically, not hardcoded, and
+// that left-click navigates immediately (no Enter needed).
 func TestDrivePickerMouseClick(t *testing.T) {
 	for _, h := range []int{24, 30, 50, 80} {
 		m := newTestModel()
@@ -597,41 +598,65 @@ func TestDrivePickerMouseClick(t *testing.T) {
 		m.pickerIndex = 0
 		m.ov = overlayDrivePicker
 
-		// Compute the expected Y for each drive using the same formula as
-		// handleDrivePickerMouse:
-		//   contentLines = 3 + len(drives)
-		//   boxHeight    = contentLines + 4
-		//   padTop       = (h - boxHeight) / 2 (min 0)
-		//   drive[0] Y   = padTop + 4
-		contentLines := 3 + len(m.drives)
-		boxHeight := contentLines + 4
+		// Compute expected Y using the same formula as handleDrivePickerMouse:
+		//   builderRawLines = 5 + len(drives) = 8
+		//   boxHeight       = builderRawLines + 4 = 12
+		//   padTop          = (h - boxHeight) / 2
+		//   drive[0] Y      = padTop + 4
+		builderRawLines := 5 + len(m.drives) // = 8
+		boxHeight := builderRawLines + 4     // = 12
 		padTop := (h - boxHeight) / 2
 		if padTop < 0 {
 			padTop = 0
 		}
-		tests := []struct{ y, wantIdx int }{
-			{padTop + 4, 0}, // C:\\
-			{padTop + 5, 1}, // D:\\
-			{padTop + 6, 2}, // E:\\
+		tests := []struct{ y, wantIdx int; wantOverlay bool }{
+			{padTop + 4, 0, false},  // C:\\ — click navigates and closes overlay
+			{padTop + 5, 1, false},  // D:\\
+			{padTop + 6, 2, false},  // E:\\
 		}
 		for _, tt := range tests {
 			m.pickerIndex = 0
+			m.ov = overlayDrivePicker
+			m.drives = []string{"C:\\", "D:\\", "E:\\"} // restore after closeOverlay clears it
+			savedDrives := m.drives
+			// Save active pane path before click — need to recreate tab since switchToDrive replaced it.
+			m.panes[0].tabs[m.panes[0].active] = &tab{}
+			origPath := m.panes[0].tabs[m.panes[0].active].path
 			m.handleMouse(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 40, Y: tt.y})
-			if m.pickerIndex != tt.wantIdx {
-				t.Fatalf("h=%d click at y=%d should select drive %d, got %d", h, tt.y, tt.wantIdx, m.pickerIndex)
+			// Left-click navigates immediately: overlay closed, path changed.
+			if m.ov != overlayNone {
+				t.Fatalf("h=%d click at y=%d should close overlay, got ov=%d", h, tt.y, m.ov)
+			}
+			wantDrive := savedDrives[tt.wantIdx]
+			actualPath := m.panes[0].tabs[m.panes[0].active].path
+			if actualPath != wantDrive {
+				t.Fatalf("h=%d click at y=%d should navigate to %s, got %s (orig was %s)", h, tt.y, wantDrive, actualPath, origPath)
 			}
 		}
-		// Click above the box should clamp to drive 0.
-		m.pickerIndex = 0
+		// Click above the box: clamps to drive 0 and navigates.
+		m.ov = overlayDrivePicker
+		m.drives = []string{"C:\\", "D:\\", "E:\\"}
+		savedDrives2 := m.drives
+		m.panes[0].tabs[m.panes[0].active] = &tab{}
 		m.handleMouse(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 40, Y: padTop + 2})
-		if m.pickerIndex != 0 {
-			t.Fatalf("h=%d click above box should clamp to 0, got %d", h, m.pickerIndex)
+		if m.ov != overlayNone {
+			t.Fatalf("h=%d click above box should close overlay, got ov=%d", h, m.ov)
 		}
-		// Click below the box should clamp to last drive.
-		m.pickerIndex = 0
+		if m.panes[0].tabs[m.panes[0].active].path != savedDrives2[0] {
+			t.Fatalf("h=%d click above box should navigate to %s, got %s", h, savedDrives2[0], m.panes[0].tabs[m.panes[0].active].path)
+		}
+		// Click below the box: clamps to last drive and navigates.
+		m.ov = overlayDrivePicker
+		m.drives = []string{"C:\\", "D:\\", "E:\\"}
+		savedDrives3 := m.drives
+		m.panes[0].tabs[m.panes[0].active] = &tab{}
 		m.handleMouse(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 40, Y: padTop + 100})
-		if m.pickerIndex != 2 {
-			t.Fatalf("h=%d click below box should clamp to last drive, got %d", h, m.pickerIndex)
+		if m.ov != overlayNone {
+			t.Fatalf("h=%d click below box should close overlay, got ov=%d", h, m.ov)
+		}
+		last := len(savedDrives3) - 1
+		if m.panes[0].tabs[m.panes[0].active].path != savedDrives3[last] {
+			t.Fatalf("h=%d click below box should navigate to %s, got %s", h, savedDrives3[last], m.panes[0].tabs[m.panes[0].active].path)
 		}
 	}
 }
