@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 
 	"tcmd/internal/fs"
 )
@@ -73,15 +74,17 @@ func (m *model) View() string {
 	if paneH < 3 {
 		paneH = 3
 	}
-	// The vertical separator "│" must reserve its REAL painted width. We use
-	// lipgloss.Width — the same ruler bubbletea paints with — NOT
-	// runewidth.RuneWidth, because the two disagree on ambiguous-width glyphs
-	// on a CJK-locale Windows: runewidth reports '│' as 2 cells while lipgloss
-	// (and the terminal) paint it as 1. Budgeting the split with runewidth's 2
-	// would shrink the right pane by one cell and, combined with the ConPTY
-	// width over-report, occasionally overflow/wrap the row.
+	// The vertical separator "│" and every other glyph are measured with
+	// runewidth — the SAME conservative ruler used everywhere else in this
+	// file. Ambiguous-width glyphs (em dash '—', '│', full-width punctuation)
+	// are counted as 2 cells by runewidth, which matches what East-Asian
+	// terminals (e.g. Windows Terminal on a CJK locale) actually paint. Using
+	// lipgloss.Width here would count them as 1, under-budget the row, and let
+	// the terminal wrap the overflow onto a phantom extra line. Every width
+	// measurement in the layout (truncateDW, padRightDW, clampRowWidth, sepW)
+	// MUST use runewidth so the budget matches the painted width.
 	sep := borderStyle.Render("│")
-	sepW := lipgloss.Width("│")
+	sepW := runewidth.RuneWidth('│')
 	if sepW < 1 {
 		sepW = 1
 	}
@@ -104,16 +107,20 @@ func (m *model) View() string {
 // pane's tabs onto the left pane's row and producing the "right tab covers
 // left tab" symptom that only shows up in non-maximized windows.
 //
-// Display width here is computed via lipgloss.Width (which strips ANSI
-// escapes) because we care about what the terminal will *paint*, not the
-// raw byte count.
+// Display width MUST be measured with runewidth.StringWidth — the SAME ruler
+// truncateDW and padRightDW use. On East-Asian terminals ambiguous glyphs
+// ('—', '│', full-width punctuation) paint as 2 cells; runewidth counts them
+// as 2, so the truncation budget matches what the terminal actually draws and
+// no phantom wrap line appears. (lipgloss.Width would count them as 1 and
+// under-budget the row, which is exactly what produced the "extra line under
+// an em-dash filename" regression.)
 func clampRowWidth(s string, max int) string {
 	if max <= 0 {
 		return s
 	}
 	lines := strings.Split(s, "\n")
 	for i, l := range lines {
-		if w := lipgloss.Width(l); w > max {
+		if w := runewidth.StringWidth(l); w > max {
 			lines[i] = truncateDW(l, max)
 		}
 	}
@@ -623,17 +630,14 @@ func truncateDW(s string, max int) string {
 			continue
 		}
 		r, size := utf8DecodeRune(s[i:])
-		_ = r
-		// Measure the per-rune display width with lipgloss.Width — the SAME
-		// ruler the terminal actually paints with (and the same one
-		// clampRowWidth uses as its final guard). Using runewidth.RuneWidth
-		// here would disagree with lipgloss on ambiguous-width glyphs such as
-		// the em dash '—' (U+2014): runewidth counts it as 2 cells while
-		// lipgloss counts it as 1. That split-meter mismatch made filenames
-		// containing '——' render two columns narrower than truncateDW
-		// budgeted, pushing the size column out of alignment with every other
-		// row. lipgloss.Width of a single rune equals its painted cell width.
-		rw := lipgloss.Width(s[i : i+size])
+		// Budget each rune with runewidth.RuneWidth — the SAME conservative
+		// ruler the terminal paints with on East-Asian locales (ambiguous
+		// glyphs like '—' count as 2 cells, matching Windows Terminal). This
+		// must agree with clampRowWidth and padRightDW below; if it ever
+		// diverged to lipgloss.Width (which counts '—' as 1) the row would be
+		// under-budgeted and the terminal would wrap the overflow onto a
+		// phantom extra line under a filename containing '——'.
+		rw := runewidth.RuneWidth(r)
 		if rw < 0 {
 			rw = 0
 		}
@@ -711,11 +715,12 @@ func hasOpenSGR(s string) bool {
 }
 
 // padRightDW right-pads s with spaces until its DISPLAY width reaches n.
-// Uses lipgloss.Width (not runewidth.StringWidth) so the pad budget matches
-// what clampRowWidth and the terminal actually paint — this is what keeps
-// em-dash / ambiguous-width filenames aligned with the rest of the column.
+// Uses runewidth.StringWidth so the pad budget matches what the terminal
+// actually paints (ambiguous glyphs = 2 cells). This MUST stay in lock-step
+// with truncateDW and clampRowWidth — a divergent ruler (e.g. lipgloss.Width)
+// would under-budget em-dash filenames and let the terminal wrap them.
 func padRightDW(s string, n int) string {
-	w := lipgloss.Width(s)
+	w := runewidth.StringWidth(s)
 	if w >= n {
 		return s
 	}
@@ -724,7 +729,7 @@ func padRightDW(s string, n int) string {
 
 // padLeftDW left-pads s with spaces until its DISPLAY width reaches n.
 func padLeftDW(s string, n int) string {
-	w := lipgloss.Width(s)
+	w := runewidth.StringWidth(s)
 	if w >= n {
 		return s
 	}

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 	"tcmd/internal/fs"
 )
 
@@ -75,8 +75,8 @@ func TestFormatEntryAlign(t *testing.T) {
 		t.Fatalf("size token not found: ascii=%q cjk=%q", la, lc)
 	}
 	// Compare DISPLAY columns, not byte indices: CJK is 3 bytes but 2 cells.
-	dispA := lipgloss.Width(la[:sa])
-	dispC := lipgloss.Width(lc[:sc])
+	dispA := runewidth.StringWidth(la[:sa])
+	dispC := runewidth.StringWidth(lc[:sc])
 	if dispA != dispC {
 		t.Fatalf("CJK size column misaligned: ascii col=%d cjk col=%d\n ascii=%q\n cjk =%q", dispA, dispC, la, lc)
 	}
@@ -97,7 +97,7 @@ func TestSeparatorStable(t *testing.T) {
 		if idx < 0 {
 			continue
 		}
-		col := lipgloss.Width(line[:idx])
+		col := runewidth.StringWidth(line[:idx])
 		if want < 0 {
 			want = col
 		}
@@ -127,7 +127,7 @@ func TestLongNameNoOverflow(t *testing.T) {
 		if idx < 0 {
 			continue
 		}
-		leftW := lipgloss.Width(line[:idx])
+		leftW := runewidth.StringWidth(line[:idx])
 		if want < 0 {
 			want = leftW
 		}
@@ -135,10 +135,10 @@ func TestLongNameNoOverflow(t *testing.T) {
 			t.Fatalf("row %d left-pane width jittered: %d (want %d) line=%q", i, leftW, want, line)
 		}
 		// every rendered line must fit within the terminal width
-		if lipgloss.Width(line) > m.width {
-			rightW := lipgloss.Width(line[idx+len("│"):])
-			t.Logf("row %d: fullDW=%d leftW=%d rightW=%d line=%q", i, lipgloss.Width(line), leftW, rightW, line)
-			t.Fatalf("row %d exceeds terminal width: %d > %d", i, lipgloss.Width(line), m.width)
+		if runewidth.StringWidth(line) > m.width {
+			rightW := runewidth.StringWidth(line[idx+len("│"):])
+			t.Logf("row %d: fullDW=%d leftW=%d rightW=%d line=%q", i, runewidth.StringWidth(line), leftW, rightW, line)
+			t.Fatalf("row %d exceeds terminal width: %d > %d", i, runewidth.StringWidth(line), m.width)
 		}
 	}
 }
@@ -156,7 +156,7 @@ func TestSeparatorWidthCountsInLayout(t *testing.T) {
 	m.panes[0].current().entries = fakeEntries("LEFT", 6)
 	m.panes[1].current().entries = fakeEntries("RIGHT", 6)
 	out := stripANSI(m.View())
-	sepW := lipgloss.Width("│")
+	sepW := runewidth.RuneWidth('│')
 	if sepW < 1 {
 		sepW = 1
 	}
@@ -166,8 +166,8 @@ func TestSeparatorWidthCountsInLayout(t *testing.T) {
 		if idx < 0 {
 			continue
 		}
-		leftW := lipgloss.Width(line[:idx])
-		rightW := lipgloss.Width(line[idx+len("│"):])
+		leftW := runewidth.StringWidth(line[:idx])
+		rightW := runewidth.StringWidth(line[idx+len("│"):])
 		if leftW+rightW != want {
 			t.Fatalf("row %d: left(%d)+right(%d)=%d, want %d (sepW=%d) line=%q",
 				i, leftW, rightW, leftW+rightW, want, sepW, line)
@@ -227,14 +227,14 @@ func TestTabBarOnRowZero(t *testing.T) {
 }
 
 // TestAmbiguousWidthAlignsColumns is the regression test for the em-dash
-// ("——") display bug: ambiguous-width glyphs such as '—' (U+2014) are counted
-// as 2 cells by runewidth but 1 cell by lipgloss — the width ruler the
-// terminal actually paints with. If truncateDW/padRightDW ever budget with
-// runewidth while clampRowWidth guards with lipgloss, a filename containing
-// '——' renders narrower than budgeted and its size column drifts out of
-// alignment with every other row. This test asserts that, after formatEntry,
-// the LIPGLOSS (real painted) width of an em-dash name equals that of a plain
-// ASCII name — i.e. the columns line up on screen.
+// ("——") display bug. The root cause was split width rulers: truncateDW/
+// padRightDW budgeted with runewidth (em dash = 2 cells, matching what
+// East-Asian terminals paint) but clampRowWidth guarded with lipgloss (em dash
+// = 1 cell), so an em-dash filename row was under-budgeted and the terminal
+// wrapped its overflow onto a phantom extra line. The fix unifies EVERY width
+// measurement on runewidth. This test asserts that, under runewidth, the width
+// of an em-dash filename row equals a plain ASCII row (columns line up) AND
+// that the row never exceeds the pane width (no wrap / no phantom line).
 func TestAmbiguousWidthAlignsColumns(t *testing.T) {
 	m := InitialModel()
 	const w = 100
@@ -247,33 +247,41 @@ func TestAmbiguousWidthAlignsColumns(t *testing.T) {
 	want := -1
 	for _, e := range cases {
 		row := stripANSI(m.formatEntry(e, false, false, true, w))
-		got := lipgloss.Width(row)
+		got := runewidth.StringWidth(row)
+		if got > w {
+			t.Fatalf("em-dash name overflows pane: %q runewidth width=%d > %d (would wrap on screen)", e.Name, got, w)
+		}
 		if want < 0 {
 			want = got
 		}
 		if got != want {
-			t.Fatalf("em-dash name misaligns: %q painted width=%d, want %d (all rows must be equal)", e.Name, got, want)
+			t.Fatalf("em-dash name misaligns: %q width=%d, want %d (all rows must be equal)", e.Name, got, want)
 		}
 	}
 }
 
-// TestTruncateDWUsesLipglossWidth locks the fix at the unit level: truncateDW
-// must budget each rune with lipgloss.Width (the painted width), so an
-// em-dash string is measured as 2 cells (not 4) and truncated to leave room
-// for the rest of the row. A regression to runewidth.RuneWidth would count
-// '——' as 4 and over-truncate CJK/ASCII neighbours.
-func TestTruncateDWUsesLipglossWidth(t *testing.T) {
-	// "——" is 2 runes, each 1 lipgloss cell -> total 2.
-	if got := lipgloss.Width(truncateDW("——", 2)); got != 2 {
-		t.Fatalf("truncateDW(\"——\",2) painted width=%d, want 2", got)
+// TestTruncateDWUsesRunewidthWidth locks the fix at the unit level: truncateDW
+// budgets each rune with runewidth.RuneWidth — the same conservative ruler the
+// terminal paints with on CJK locales (em dash '—' = 2 cells). This keeps the
+// row budget equal to the painted width so the terminal never wraps the
+// overflow. A regression to lipgloss.Width (em dash = 1) would under-budget
+// and re-introduce the phantom wrap line.
+func TestTruncateDWUsesRunewidthWidth(t *testing.T) {
+	// "——" is 2 runes, each 2 runewidth cells -> total 4.
+	if got := runewidth.StringWidth(truncateDW("——", 4)); got != 4 {
+		t.Fatalf("truncateDW(\"——\",4) width=%d, want 4", got)
 	}
-	// Budget of 3 must still fit "——" plus one more single-cell rune.
-	if got := lipgloss.Width(truncateDW("——a", 3)); got != 3 {
-		t.Fatalf("truncateDW(\"——a\",3) painted width=%d, want 3", got)
+	// Budget of 5 fits "——" (4) plus one more single-cell rune.
+	if got := runewidth.StringWidth(truncateDW("——a", 5)); got != 5 {
+		t.Fatalf("truncateDW(\"——a\",5) width=%d, want 5", got)
 	}
 	// A long CJK+emdash name truncated to 10 must land at exactly 10 cells.
 	long := "项目报告——最终版本说明文档.md"
-	if got := lipgloss.Width(truncateDW(long, 10)); got != 10 {
-		t.Fatalf("truncateDW(CJK+dash,10) painted width=%d, want 10", got)
+	if got := runewidth.StringWidth(truncateDW(long, 10)); got != 10 {
+		t.Fatalf("truncateDW(CJK+dash,10) width=%d, want 10", got)
+	}
+	// Regression guard: under-budgeting must never let a row exceed its max.
+	if got := runewidth.StringWidth(truncateDW(long, 10)); got > 10 {
+		t.Fatalf("truncateDW exceeded max: %d > 10", got)
 	}
 }

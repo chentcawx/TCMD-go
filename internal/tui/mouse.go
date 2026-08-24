@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -39,7 +40,7 @@ func (m *model) sepCol() int {
 	if w < 40 {
 		w = 40
 	}
-	sepW := lipgloss.Width("│") // MUST match View()'s separator width ruler
+	sepW := runewidth.RuneWidth('│') // MUST match View()'s separator width ruler
 	if w-sepW < 2 {
 		sepW = 1
 	}
@@ -474,20 +475,21 @@ func filepathBase(p string) string {
 }
 
 func runeWidthOf(s string) int {
-	return lipgloss.Width(s)
+	return runewidth.StringWidth(s)
 }
 
 // contextMenuWidth returns the inner width (excluding border) needed to render
-// the menu without wrapping. Uses lipgloss.Width to match the real painted
-// width (ambiguous-width glyphs like '—' count as 1 there, not 2).
+// the menu without wrapping. Uses runewidth.StringWidth so the budget matches
+// the painted width (ambiguous glyphs like '—' count as 2, as the terminal
+// draws them — keeping the menu from wrapping on CJK locales).
 func contextMenuWidth(items []ctxItem) int {
 	w := 0
 	for _, it := range items {
-		if lw := lipgloss.Width(it.label); lw > w {
+		if lw := runewidth.StringWidth(it.label); lw > w {
 			w = lw
 		}
 	}
-	if lw := lipgloss.Width("上下文菜单"); lw > w {
+	if lw := runewidth.StringWidth("上下文菜单"); lw > w {
 		w = lw
 	}
 	return w
