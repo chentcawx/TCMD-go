@@ -15,7 +15,13 @@ import (
 // TestJunctionIsDir verifies that junctions are correctly identified as
 // directories by fs.ListDir. This catches regressions where a junction's
 // mode bits don't include os.ModeDir, causing the UI to treat it as a file.
+//
+// In short mode we skip the mklink invocation to avoid spawning a visible
+// Command Prompt window during automated test runs.
 func TestJunctionIsDir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skips mklink in -short mode")
+	}
 	root := t.TempDir()
 	real := filepath.Join(root, "real")
 	link := filepath.Join(root, "link")

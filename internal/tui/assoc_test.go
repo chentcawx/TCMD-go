@@ -114,7 +114,10 @@ func TestRunWithFileStartsProcess(t *testing.T) {
 	// runWithFile should start an existing command without blocking on it.
 	// On Windows we exercise the real code path with cmd; elsewhere we skip
 	// since the detached-start semantics differ by shell.
-	if err := runWithFile("cmd", "echo hi"); err != nil {
+	// Use "echo" via cmd /c — on Windows this may open a brief console window;
+	// the test only verifies the process starts without error, not that the
+	// window stays hidden.
+	if err := runWithFile("cmd", "/c echo hi"); err != nil {
 		t.Skipf("cmd unavailable on this platform: %v", err)
 	}
 }

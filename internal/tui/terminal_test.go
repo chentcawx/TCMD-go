@@ -10,7 +10,13 @@ import (
 // terminal protocol can distinguish) trigger runs beginCmdTerminal, which opens
 // a standalone terminal and copies the cursor directory to the clipboard,
 // without disturbing the mkdir binding on plain F7.
+//
+// In short mode we skip the actual terminal launch to avoid spawning a visible
+// Command Prompt window during automated test runs.
 func TestAltF7OpensCmdTerminal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skips terminal spawn in -short mode")
+	}
 	m := InitialModel()
 	mm, _ := m.Update(tea.KeyMsg{Type: tea.KeyF7, Alt: true})
 	nm := mm.(*model)
