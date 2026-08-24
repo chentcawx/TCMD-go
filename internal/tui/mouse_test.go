@@ -586,28 +586,52 @@ func TestDrivePickerMouseWheel(t *testing.T) {
 	}
 }
 
-// TestDrivePickerMouseClick selects a drive by clicking.
+// TestDrivePickerMouseClick selects a drive by clicking at various window
+// heights to verify the offset is computed dynamically, not hardcoded.
 func TestDrivePickerMouseClick(t *testing.T) {
-	m := newTestModel()
-	m.width = 80
-	m.height = 24
-	m.drives = []string{"C:\\", "D:\\", "E:\\"}
-	m.pickerIndex = 0
-	m.ov = overlayDrivePicker
-
-	// The picker render formula: with h=24, centerBox pads ~15 content lines
-	// to center, yielding padTop=4. Drive items land at rows 10,11,12.
-	// clickedIdx = Y - 10 maps correctly.
-	tests := []struct{ y, wantIdx int }{
-		{10, 0}, // C:\\
-		{11, 1}, // D:\\
-		{12, 2}, // E:\\
-	}
-	for _, tt := range tests {
+	for _, h := range []int{24, 30, 50, 80} {
+		m := newTestModel()
+		m.width = 80
+		m.height = h
+		m.drives = []string{"C:\\", "D:\\", "E:\\"}
 		m.pickerIndex = 0
-		m.handleMouse(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 40, Y: tt.y})
-		if m.pickerIndex != tt.wantIdx {
-			t.Fatalf("click at y=%d should select drive %d, got %d", tt.y, tt.wantIdx, m.pickerIndex)
+		m.ov = overlayDrivePicker
+
+		// Compute the expected Y for each drive using the same formula as
+		// handleDrivePickerMouse:
+		//   contentLines = 3 + len(drives)
+		//   boxHeight    = contentLines + 4
+		//   padTop       = (h - boxHeight) / 2 (min 0)
+		//   drive[0] Y   = padTop + 4
+		contentLines := 3 + len(m.drives)
+		boxHeight := contentLines + 4
+		padTop := (h - boxHeight) / 2
+		if padTop < 0 {
+			padTop = 0
+		}
+		tests := []struct{ y, wantIdx int }{
+			{padTop + 4, 0}, // C:\\
+			{padTop + 5, 1}, // D:\\
+			{padTop + 6, 2}, // E:\\
+		}
+		for _, tt := range tests {
+			m.pickerIndex = 0
+			m.handleMouse(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 40, Y: tt.y})
+			if m.pickerIndex != tt.wantIdx {
+				t.Fatalf("h=%d click at y=%d should select drive %d, got %d", h, tt.y, tt.wantIdx, m.pickerIndex)
+			}
+		}
+		// Click above the box should clamp to drive 0.
+		m.pickerIndex = 0
+		m.handleMouse(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 40, Y: padTop + 2})
+		if m.pickerIndex != 0 {
+			t.Fatalf("h=%d click above box should clamp to 0, got %d", h, m.pickerIndex)
+		}
+		// Click below the box should clamp to last drive.
+		m.pickerIndex = 0
+		m.handleMouse(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 40, Y: padTop + 100})
+		if m.pickerIndex != 2 {
+			t.Fatalf("h=%d click below box should clamp to last drive, got %d", h, m.pickerIndex)
 		}
 	}
 }

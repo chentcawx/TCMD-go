@@ -151,12 +151,33 @@ func (m *model) handleDrivePickerMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if msg.Action != tea.MouseActionPress {
 			return m, nil
 		}
-		// Map Y coordinate to drive index. The picker is centered in the
-		// terminal via centerBox: with h=24 and ~15 rendered lines (border +
-		// padding + content), padTop = (24-15)/2 = 4, so the first drive item
-		// lands at row 4+6 = 10 (after top border + padding row + title + blank
-		// line). clickedIdx = Y - 10 maps correctly. We clamp to [0, len(drives)).
-		clickedIdx := msg.Y - 10
+		// Compute the Y offset where drive[0] actually appears on screen.
+		//
+		// renderDrivePicker content structure:
+		//   title row   (1)
+		//   blank row   (1)  — from the trailing "\n\n" after title
+		//   N drive rows
+		//   prompt row  (1)  — "  Enter 确认    Esc 取消"
+		// contentLines = 3 + len(m.drives)
+		//
+		// lipgloss RoundedBorder + Padding(1,3) adds:
+		//   top border  (1), top padding (1), bottom padding (1), bottom border (1)
+		//   => +4 rows
+		//
+		// boxHeight = contentLines + 4 = len(m.drives) + 7
+		// centerBox padTop = (m.height - boxHeight) / 2
+		//
+		// Within the lipgloss box, drive[0] starts at row 4:
+		//   border(0) + padding(1) + title(2) + blank(3) + drive[0](4)
+		//
+		// Therefore global Y of drive[i] = padTop + 4 + i.
+		contentLines := 3 + len(m.drives)
+		boxHeight := contentLines + 4
+		padTop := (m.height - boxHeight) / 2
+		if padTop < 0 {
+			padTop = 0
+		}
+		clickedIdx := msg.Y - (padTop + 4)
 		if clickedIdx < 0 {
 			clickedIdx = 0
 		}
