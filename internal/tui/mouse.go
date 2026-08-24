@@ -92,6 +92,8 @@ func (m *model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m.handleContextMenuMouse(msg)
 	case overlayDrivePicker:
 		return m.handleDrivePickerMouse(msg)
+	case overlayTree:
+		return m.handleTreeViewMouse(msg)
 	case overlayNone:
 		// fall through to normal pane interaction
 	default:
@@ -171,6 +173,27 @@ func absInt(n int) int {
 		return -n
 	}
 	return n
+}
+
+// handleTreeViewMouse handles mouse events for the F3 directory tree overlay.
+// Wheel up/down scrolls the tree view by one line.
+func (m *model) handleTreeViewMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	visibleLines := m.height - 4
+	if visibleLines < 2 {
+		visibleLines = 2
+	}
+	maxScroll := maxInt(0, len(m.treeFlat)-visibleLines)
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		if m.treeScroll > 0 {
+			m.treeScroll--
+		}
+	case tea.MouseButtonWheelDown:
+		if m.treeScroll < maxScroll {
+			m.treeScroll++
+		}
+	}
+	return m, nil
 }
 
 // handleLeftClick implements the core mouse interaction: activate a pane by

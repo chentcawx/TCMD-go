@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -62,25 +63,28 @@ func TestF3TreeLoadingFlow(t *testing.T) {
 	}
 }
 
-// TestF3TreeEnterNavigation verifies Enter descends into the node under the
-// cursor (pushing the current path onto the history stack) and Backspace
-// returns to the previous directory — the core navigation the overlay promises
-// in its hint line.
-func TestF3TreeEnterNavigation(t *testing.T) {
+// TestF3TreeViewIsScrollOnly verifies that the F3 tree overlay is now a
+// scroll-only viewer (no cursor navigation, no Enter-to-enter). Keys ↑↓ PgUp
+// PgDown Home End should only move treeScroll; Enter/Backspace are no-ops.
+func TestF3TreeViewIsScrollOnly(t *testing.T) {
 	dir := t.TempDir()
 	sub := filepath.Join(dir, "sub")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Put a marker file inside sub so the descendant tree has something.
 	if err := os.WriteFile(filepath.Join(sub, "inner.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
+	}
+	// Create many dirs so treeFlat is longer than visibleLines (h=24 => 20).
+	for i := 0; i < 25; i++ {
+		name := filepath.Join(dir, fmt.Sprintf("d%02d", i))
+		if err := os.MkdirAll(name, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	m := InitialModel()
 	m.active = 0
-
-	// Open tree at the top dir.
 	cmd := m.openTreeView(dir)
 	msg := cmd()
 	updated, _ := m.Update(msg)
@@ -88,45 +92,67 @@ func TestF3TreeEnterNavigation(t *testing.T) {
 	if m.treeRoot == nil {
 		t.Fatal("treeRoot not populated")
 	}
-	// treeFlat[0] should be the "sub" child.
-	if len(m.treeFlat) != 1 {
-		t.Fatalf("expected 1 visible node (sub), got %d", len(m.treeFlat))
+	if len(m.treeFlat) == 0 {
+		t.Fatal("treeFlat should have entries")
 	}
-	if m.treeFlat[0].path != sub {
-		t.Fatalf("expected flattened node to be %q, got %q", sub, m.treeFlat[0].path)
+	initialScroll := m.treeScroll
+	t.Logf("treeFlat len=%d height=%d visibleLines=%d initialScroll=%d ov=%d", len(m.treeFlat), m.height, m.height-4, initialScroll, m.ov)
+
+	// First jump to bottom so we have room to scroll up.
+	_, _ = m.handleTreeViewKey(tea.KeyMsg{Type: tea.KeyEnd})
+	endScroll := m.treeScroll
+	if endScroll <= 0 {
+		t.Fatalf("End should scroll to bottom (endScroll=%d), treeFlat len=%d", endScroll, len(m.treeFlat))
 	}
 
-	// Press Enter on "sub" — should re-stat sub and push dir onto history.
-	_, cmd2 := m.handleTreeViewKey(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd2 == nil {
-		t.Fatal("Enter on a node must return a non-nil Cmd (re-stat of the subtree)")
-	}
-	// cmd2 is the openTreeView Cmd for sub; execute and feed back.
-	msg2 := cmd2()
-	updated2, _ := m.Update(msg2)
-	m = updated2.(*model)
-	if m.treePath != sub {
-		t.Fatalf("after Enter, treePath should be %q, got %q", sub, m.treePath)
-	}
-	if len(m.treeHistory) != 1 || m.treeHistory[0] != dir {
-		t.Fatalf("history should contain the parent dir, got %v", m.treeHistory)
-	}
-	if m.treeRoot.totalFiles() != 1 {
-		t.Errorf("sub should report 1 total file, got %d", m.treeRoot.totalFiles())
+	// Up arrow should scroll up by 1 from bottom.
+	_, _ = m.handleTreeViewKey(tea.KeyMsg{Type: tea.KeyUp})
+	if m.treeScroll != endScroll-1 {
+		t.Fatalf("up should decrement scroll from %d: got %d", endScroll, m.treeScroll)
 	}
 
-	// Press Backspace — should return to dir.
-	_, cmd3 := m.handleTreeViewKey(tea.KeyMsg{Type: tea.KeyBackspace})
-	if cmd3 == nil {
-		t.Fatal("Backspace must return a non-nil Cmd (re-stat of parent)")
+	// Down arrow should restore to bottom.
+	_, _ = m.handleTreeViewKey(tea.KeyMsg{Type: tea.KeyDown})
+	if m.treeScroll != endScroll {
+		t.Fatalf("down should restore scroll to %d: got %d", endScroll, m.treeScroll)
 	}
-	msg3 := cmd3()
-	updated3, _ := m.Update(msg3)
-	m = updated3.(*model)
-	if m.treePath != dir {
-		t.Fatalf("after Backspace, treePath should be %q, got %q", dir, m.treePath)
+
+	// Home jumps to top.
+	_, _ = m.handleTreeViewKey(tea.KeyMsg{Type: tea.KeyHome})
+	if m.treeScroll != 0 {
+		t.Fatalf("Home should reset scroll to 0, got %d", m.treeScroll)
 	}
-	if len(m.treeHistory) != 0 {
-		t.Errorf("history should be empty after returning to root, got %v", m.treeHistory)
+
+	// End jumps to bottom again.
+	_, _ = m.handleTreeViewKey(tea.KeyMsg{Type: tea.KeyEnd})
+	maxScroll := len(m.treeFlat) - (m.height - 4)
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if m.treeScroll != maxScroll {
+		t.Fatalf("End should set scroll to max (%d), got %d", maxScroll, m.treeScroll)
+	}
+
+	// PageUp from bottom should move up one screenful.
+	_, _ = m.handleTreeViewKey(tea.KeyMsg{Type: tea.KeyPgUp})
+	if m.treeScroll >= maxScroll {
+		t.Fatalf("PgUp should decrease scroll from %d, got %d", maxScroll, m.treeScroll)
+	}
+
+	// Enter on a node is now a no-op (scroll-only mode).
+	before := m.treeScroll
+	_, cmdEnter := m.handleTreeViewKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmdEnter != nil {
+		t.Fatal("Enter should return nil Cmd in scroll-only mode")
+	}
+	if m.treeScroll != before {
+		t.Fatalf("Enter should not change scroll, before=%d after=%d", before, m.treeScroll)
+	}
+
+	// Backspace on root (no history) is a no-op.
+	_, cmdBS := m.handleTreeViewKey(tea.KeyMsg{Type: tea.KeyBackspace})
+	if cmdBS != nil {
+		t.Fatal("Backspace on root should return nil Cmd")
 	}
 }
+

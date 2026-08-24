@@ -579,11 +579,10 @@ func centerBox(s string, w, h int) string {
 	return strings.Repeat("\n", padTop) + s
 }
 
-// renderTreeView draws a recursive directory tree for the currently-viewed
+// renderTreeView draws a scroll-only recursive directory tree for the currently-viewed
 // path. The root summary line shows total dirs/files/size across the whole
-// subtree; each child row shows its own direct counts. ↑↓ navigates, Enter
-// dives into the highlighted directory, Backspace returns to parent, Esc
-// closes the overlay.
+// subtree; each child row shows its own direct counts. ↑↓/PgUp/PgDown/Home/End
+// scroll the view; Esc closes the overlay. No cursor navigation or Enter-to-enter.
 func (m *model) renderTreeView() string {
 	w := m.width
 	h := m.height
@@ -616,8 +615,7 @@ func (m *model) renderTreeView() string {
 			Render(b.String())
 		return centerBox(box, w, h)
 	}
-	// Render tree lines with scroll and cursor highlight.
-	// Available lines for content: h - 2 (title + hint).
+	// Render tree lines with scroll. No cursor highlight — pure browse mode.
 	visibleLines := h - 4
 	if visibleLines < 2 {
 		visibleLines = 2
@@ -634,31 +632,15 @@ func (m *model) renderTreeView() string {
 		m.treeScroll = maxScroll
 	}
 
-	// Determine which line the cursor highlights.
-	// treeCursor indexes into treeFlat (pre-order nodes, excludes root summary).
-	// The first line of allLines is the root summary, so the visual line for
-	// treeCursor is: 1 (summary) + treeCursor + scroll offset.
-	cursorVisualLine := 1 + m.treeScroll + m.treeCursor
-
 	var renderedLines int
 	for i := m.treeScroll; i < totalLines && renderedLines < visibleLines; i++ {
-		line := allLines[i]
-		// Highlight the cursor line.
-		if i == cursorVisualLine {
-			line = cursorStyle.Render(" ▶ " + line)
-		} else {
-			line = "   " + line
-		}
-		b.WriteString(truncateDW(line, w-4))
+		b.WriteString(truncateDW(allLines[i], w-4))
 		b.WriteString("\n")
 		renderedLines++
 	}
 
-	// Navigation hint.
-	hint := "  ↑↓ 导航  Enter 进入  ← 返回上级  Esc 关闭"
-	if len(m.treeHistory) > 0 {
-		hint = "  ↑↓ 导航  Enter 进入  ←/Backspace 返回上级  Esc 关闭"
-	}
+	// Scroll hint.
+	hint := "  ↑↓ 滚动  PgUp/PgDown 翻页  Home/End 首尾  Esc 关闭"
 	b.WriteString("\n" + statusStyle.Render(truncateDW(hint, w-4)))
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
